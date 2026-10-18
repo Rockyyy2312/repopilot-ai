@@ -8,11 +8,13 @@ import time
 import uuid
 import urllib.request
 import zipfile
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
+from fastapi.staticfiles import StaticFiles
 
 from app.analysis import AnalysisConfig, analyze_files
 from app.analysis.engine import is_sensitive, safe_relative_path
@@ -329,3 +331,8 @@ def report(project_id: str) -> dict[str, str]:
     lines = [f"# RepoPilot report", "", f"- Files: {len(project['files'])}", f"- Symbols: {len(project['index']['symbols'])}", f"- Imports: {len(project['index']['imports'])}", "", "## Symbols"]
     lines.extend(f"- `{s['name']}` — `{s['path']}:{s['line']}`" for s in project["index"]["symbols"])
     return {"markdown": "\n".join(lines)}
+
+
+frontend_dist = Path(os.environ.get("FRONTEND_DIST_DIR", "/app/frontend-dist"))
+if frontend_dist.is_dir():
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
