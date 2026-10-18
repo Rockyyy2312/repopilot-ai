@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
 import * as api from './api'
+import { pathForRoute, routeForPath, type AppRoute, type RouteName } from './routing'
 import { Background, Controls, MiniMap, ReactFlow, type Edge, type Node } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
@@ -8,11 +9,15 @@ type Tab = 'overview' | 'search' | 'investigate' | 'architecture'
 const icon = (value: string) => <span className="ico" aria-hidden="true">{value}</span>
 
 function App() {
-  const [project, setProject] = useState<api.ImportResponse | null>(null)
-  const [tree, setTree] = useState<string[]>([])
+  const [project, setProject] = useState<api.ImportResponse | null>(() => {
+    try { const saved = sessionStorage.getItem('repopilot.project'); return saved ? JSON.parse(saved) as api.ImportResponse : null } catch { return null }
+  })
+  const [tree, setTree] = useState<string[]>(() => {
+    try { const saved = sessionStorage.getItem('repopilot.project'); const parsed = saved ? JSON.parse(saved) as api.ImportResponse : null; return parsed?.analysis.files.map(file => file.path) ?? [] } catch { return [] }
+  })
   const [selected, setSelected] = useState('')
   const [content, setContent] = useState('')
-  const [tab, setTab] = useState<Tab>('overview')
+  const [route, setRoute] = useState<AppRoute>(() => routeForPath(window.location.pathname))
   const [url, setUrl] = useState('')
   const [query, setQuery] = useState('')
   const [question, setQuestion] = useState('')
@@ -24,6 +29,31 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const tab: Tab = route.name === 'search' || route.name === 'investigate' || route.name === 'architecture' ? route.name : 'overview'
+  const navigate = (name: Exclude<RouteName, 'landing' | 'not-found'>, replace = false) => {
+    const path = pathForRoute(name)
+    if (replace) window.history.replaceState({}, '', path); else window.history.pushState({}, '', path)
+    setRoute(routeForPath(path))
+  }
+
+  useEffect(() => {
+    const onPopState = () => setRoute(routeForPath(window.location.pathname))
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  useEffect(() => {
+    if (project) sessionStorage.setItem('repopilot.project', JSON.stringify(project))
+  }, [project])
+
+  useEffect(() => {
+    if (project && route.name === 'landing') navigate('overview', true)
+  }, [project, route.name])
+
+  useEffect(() => {
+    if (project && route.name === 'architecture' && !graphData && !loading) void loadGraph()
+  }, [project, route.name, graphData, loading])
+
   const run = async (task: () => Promise<void>) => {
     setLoading(true); setError('')
     try { await task() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Something went wrong') } finally { setLoading(false) }
@@ -33,7 +63,7 @@ function App() {
     const response = await api.getTree(imported.id)
     setProject(imported)
     setTree(response.files)
-    setTab('overview')
+    navigate('overview', true)
     setSelected('')
     setContent('')
     setResults([])
@@ -45,23 +75,28 @@ function App() {
   const upload = (event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (file) run(async () => loadProject(await api.importArchive(file))) }
 
   useEffect(() => {
-    if (!project || !selected) return
-    void run(async () => setContent((await api.getFile(project.id, selected)).content))
-  }, [project, selected])
+    const filePath = route.filePath || selected
+    if (!project || !filePath) return
+    if (route.filePath && route.filePath !== selected) setSelected(route.filePath)
+    void run(async () => setContent((await api.getFile(project.id, filePath)).content))
+  }, [project, selected, route.filePath])
 
-  const doSearch = () => project && query.trim() && run(async () => { setResults(await api.search(project.id, query.trim())); setTab('search') })
-  const doInvestigation = () => project && question.trim() && run(async () => { setInvestigation(await api.investigate(project.id, { question: question.trim(), error_message: errorMessage.trim(), stack_trace: stackTrace })); setTab('investigate') })
-  const loadGraph = () => project && run(async () => { setGraphData(await api.graph(project.id)); setTab('architecture') })
+  const doSearch = () => project && query.trim() && run(async () => { setResults(await api.search(project.id, query.trim())); navigate('search') })
+  const doInvestigation = () => project && question.trim() && run(async () => { setInvestigation(await api.investigate(project.id, { question: question.trim(), error_message: errorMessage.trim(), stack_trace: stackTrace })); navigate('investigate') })
+  const loadGraph = () => project && run(async () => { setGraphData(await api.graph(project.id)); navigate('architecture') })
   const downloadReport = () => project && run(async () => { const { markdown } = await api.report(project.id); const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown' })); link.download = `${project.repository_name}-report.md`; link.click(); URL.revokeObjectURL(link.href) })
+  const openFile = (path: string) => { setSelected(path); window.history.pushState({}, '', `/file/${encodeURIComponent(path)}`); setRoute({ name: 'overview', filePath: path }) }
 
+  if (route.name === 'not-found') return <div className="app min-h-screen"><Header project={project} /><NotFound navigate={() => navigate('overview')} /></div>
+  if (!project && route.name !== 'landing') return <div className="app min-h-screen"><Header project={null} /><section className="content standalone"><NotFound navigate={() => { window.history.pushState({}, '', '/'); setRoute({ name: 'landing' }) }} title="Import a repository first" detail="This workspace route needs an analyzed repository." /></section></div>
   return <div className="app min-h-screen">
     <Header project={project} />
     <main className="shell">
-      <Sidebar project={project} tab={tab} setTab={setTab} loadGraph={loadGraph} />
+      <Sidebar project={project} route={route} navigate={navigate} loadGraph={loadGraph} />
       <section className="content">
         <div className="topline"><div><div className="eyebrow">{project ? 'PROJECT ANALYSIS' : 'GET STARTED'}</div><h1>{project ? 'Understand your codebase.' : 'Bring a repository into focus.'}</h1><p className="subtitle">{project ? 'Trace evidence, inspect files, and turn questions into grounded findings.' : 'Import a public GitHub repository or local archive to explore it with evidence.'}</p></div>{project && <button className="outline" onClick={downloadReport}>{icon('↓')} Download report</button>}</div>
         {error && <Alert message={error} clear={() => setError('')} />}
-        {!project ? <ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /> : <Workspace project={project} tree={tree} selected={selected} setSelected={setSelected} content={content} tab={tab} setTab={setTab} loading={loading} query={query} setQuery={setQuery} doSearch={doSearch} results={results} question={question} setQuestion={setQuestion} errorMessage={errorMessage} setErrorMessage={setErrorMessage} stackTrace={stackTrace} setStackTrace={setStackTrace} doInvestigation={doInvestigation} investigation={investigation} graphData={graphData} />}
+        {!project ? <ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /> : <Workspace project={project} tree={tree} selected={route.filePath || selected} setSelected={openFile} content={content} tab={tab} navigate={navigate} loading={loading} query={query} setQuery={setQuery} doSearch={doSearch} results={results} question={question} setQuestion={setQuestion} errorMessage={errorMessage} setErrorMessage={setErrorMessage} stackTrace={stackTrace} setStackTrace={setStackTrace} doInvestigation={doInvestigation} investigation={investigation} graphData={graphData} />}
       </section>
     </main>
   </div>
@@ -69,13 +104,15 @@ function App() {
 
 function Header({ project }: { project: api.ImportResponse | null }) { return <header><div className="brand"><div className="brand-mark">✦</div><div><b>RepoPilot</b><span>AI CODE INTELLIGENCE</span></div></div><div className="header-right"><span className="status-dot" /> API connected {project && <span className="header-repo">/ {project.repository_name}</span>}</div></header> }
 
-function Sidebar({ project, tab, setTab, loadGraph }: { project: api.ImportResponse | null; tab: Tab; setTab: (tab: Tab) => void; loadGraph: () => void }) { return <aside><div className="eyebrow">WORKSPACE</div><div className="workspace"><div className="repo-icon">⌁</div><div><b>{project ? project.repository_name : 'Your workspace'}</b><small>{project ? project.source.url?.replace('https://github.com/', '') || project.source.filename : 'Import a codebase to begin'}</small></div></div><nav>{[['overview', '▦', 'Overview'], ['search', '⌕', 'Code search'], ['investigate', '◈', 'Investigate issue']].map(([value, glyph, label]) => <button key={value} className={tab === value ? 'active' : ''} onClick={() => setTab(value as Tab)}>{icon(glyph)} {label}</button>)}<button className={tab === 'architecture' ? 'active' : ''} onClick={loadGraph}>{icon('⌬')} Architecture</button></nav><div className="aside-foot"><div className="limit"><b>Evidence-first analysis</b><span>Results link back to source files and lines.</span></div><small>REPOPILOT AI · PHASE 3</small></div></aside> }
+function Sidebar({ project, route, navigate, loadGraph }: { project: api.ImportResponse | null; route: AppRoute; navigate: (name: Exclude<RouteName, 'landing' | 'not-found'>) => void; loadGraph: () => void }) { return <aside><div className="eyebrow">WORKSPACE</div><div className="workspace"><div className="repo-icon">⌁</div><div><b>{project ? project.repository_name : 'Your workspace'}</b><small>{project ? project.source.url?.replace('https://github.com/', '') || project.source.filename : 'Import a codebase to begin'}</small></div></div><nav>{[['overview', '▦', 'Overview'], ['search', '⌕', 'Code search'], ['investigate', '◈', 'Investigate issue']].map(([value, glyph, label]) => <button key={value} className={route.name === value ? 'active' : ''} onClick={() => navigate(value as Exclude<RouteName, 'landing' | 'not-found'>)}>{icon(glyph)} {label}</button>)}<button className={route.name === 'architecture' ? 'active' : ''} onClick={loadGraph}>{icon('⌬')} Architecture</button></nav><div className="aside-foot"><div className="limit"><b>Evidence-first analysis</b><span>Results link back to source files and lines.</span></div><small>REPOPILOT AI · PHASE 3</small></div></aside> }
 
 function Alert({ message, clear }: { message: string; clear: () => void }) { return <div className="alert" role="alert">{icon('!')}<div><b>Something needs attention</b><span>{message}</span></div><button onClick={clear} aria-label="Dismiss error">×</button></div> }
 
 function ImportCard({ url, setUrl, submitUrl, upload, loading }: { url: string; setUrl: (value: string) => void; submitUrl: () => void; upload: (event: ChangeEvent<HTMLInputElement>) => void; loading: boolean }) { return <div className="import-grid"><div className="card import-main"><div className="card-icon">⌘</div><h2>Import from GitHub</h2><p>Paste a public repository URL. The backend validates, downloads, and analyzes a safe snapshot.</p><div className="url-row"><input aria-label="GitHub repository URL" placeholder="https://github.com/owner/repository" value={url} onChange={event => setUrl(event.target.value)} onKeyDown={event => event.key === 'Enter' && submitUrl()} /><button onClick={submitUrl} disabled={loading || !url.trim()}>{loading ? 'Analyzing…' : 'Import repository'} <span>→</span></button></div><div className="hint">{icon('i')} Public GitHub repositories only · no Git history</div></div><label className="card dropzone"><div className="upload-icon">↥</div><h2>Upload an archive</h2><p>ZIP, TAR, or TAR.GZ · securely inspected in memory</p><span className="button-secondary">Choose file</span><input type="file" accept=".zip,.tar,.tar.gz,.tgz" onChange={upload} /></label><div className="trust"><span>✦</span><b>Grounded by evidence</b><small>Imported code is never executed. Unsupported files are flagged instead of guessed.</small></div></div> }
 
- function Workspace({ project, tree, selected, setSelected, content, tab, setTab, loading, query, setQuery, doSearch, results, question, setQuestion, errorMessage, setErrorMessage, stackTrace, setStackTrace, doInvestigation, investigation, graphData }: { project: api.ImportResponse; tree: string[]; selected: string; setSelected: (path: string) => void; content: string; tab: Tab; setTab: (tab: Tab) => void; loading: boolean; query: string; setQuery: (value: string) => void; doSearch: () => void; results: api.SearchResult[]; question: string; setQuestion: (value: string) => void; errorMessage: string; setErrorMessage: (value: string) => void; stackTrace: string; setStackTrace: (value: string) => void; doInvestigation: () => void; investigation: api.Investigation | null; graphData: api.Graph | null }) { return <><div className="tabs">{(['overview', 'search', 'investigate', 'architecture'] as Tab[]).map(value => <button className={tab === value ? 'selected' : ''} onClick={() => setTab(value)} key={value}>{value === 'overview' ? 'Project status' : value[0].toUpperCase() + value.slice(1)}</button>)}</div>{tab === 'overview' && <Overview project={project} tree={tree} selected={selected} setSelected={setSelected} loading={loading} />}{tab === 'search' && <Search query={query} setQuery={setQuery} submit={doSearch} results={results} select={setSelected} loading={loading} />}{tab === 'investigate' && <><InvestigationContext errorMessage={errorMessage} setErrorMessage={setErrorMessage} stackTrace={stackTrace} setStackTrace={setStackTrace} /><Investigate question={question} setQuestion={setQuestion} submit={doInvestigation} data={investigation} loading={loading} /></>}{tab === 'architecture' && <Architecture data={graphData} loading={loading} selectFile={setSelected} />}{selected && <FilePreview path={selected} content={content} loading={loading} />}</> }
+ function Workspace({ project, tree, selected, setSelected, content, tab, navigate, loading, query, setQuery, doSearch, results, question, setQuestion, errorMessage, setErrorMessage, stackTrace, setStackTrace, doInvestigation, investigation, graphData }: { project: api.ImportResponse; tree: string[]; selected: string; setSelected: (path: string) => void; content: string; tab: Tab; navigate: (name: Exclude<RouteName, 'landing' | 'not-found'>) => void; loading: boolean; query: string; setQuery: (value: string) => void; doSearch: () => void; results: api.SearchResult[]; question: string; setQuestion: (value: string) => void; errorMessage: string; setErrorMessage: (value: string) => void; stackTrace: string; setStackTrace: (value: string) => void; doInvestigation: () => void; investigation: api.Investigation | null; graphData: api.Graph | null }) { return <><div className="tabs">{(['overview', 'search', 'investigate', 'architecture'] as Tab[]).map(value => <button className={tab === value ? 'selected' : ''} onClick={() => navigate(value === 'overview' ? 'overview' : value)} key={value}>{value === 'overview' ? 'Project status' : value[0].toUpperCase() + value.slice(1)}</button>)}</div>{tab === 'overview' && <Overview project={project} tree={tree} selected={selected} setSelected={setSelected} loading={loading} />}{tab === 'search' && <Search query={query} setQuery={setQuery} submit={doSearch} results={results} select={setSelected} loading={loading} />}{tab === 'investigate' && <><InvestigationContext errorMessage={errorMessage} setErrorMessage={setErrorMessage} stackTrace={stackTrace} setStackTrace={setStackTrace} /><Investigate question={question} setQuestion={setQuestion} submit={doInvestigation} data={investigation} loading={loading} /></>}{tab === 'architecture' && <Architecture data={graphData} loading={loading} selectFile={setSelected} />}{tab === 'overview' && selected && <FilePreview path={selected} content={content} loading={loading} />}</> }
+
+function NotFound({ navigate, title = 'Route not found', detail = 'Use the workspace navigation to continue.' }: { navigate: () => void; title?: string; detail?: string }) { return <main className="not-found"><div className="not-found-mark">404</div><div className="eyebrow">REPOPILOT ROUTER</div><h1>{title}</h1><p>{detail}</p><button className="primary" onClick={navigate}>Return to workspace</button></main> }
 
 function Card({ children, className = '' }: { children: ReactNode; className?: string }) { return <div className={`card ${className}`}>{children}</div> }
 function InvestigationContext({ errorMessage, setErrorMessage, stackTrace, setStackTrace }: { errorMessage: string; setErrorMessage: (value: string) => void; stackTrace: string; setStackTrace: (value: string) => void }) { return <Card className="investigation-context"><div className="eyebrow">OPTIONAL RUNTIME CONTEXT</div><p>These fields are sent to the backend as evidence inputs; a stack-trace location does not prove a root cause.</p><input className="investigation-input" aria-label="Error message" placeholder="Error message (optional)" value={errorMessage} onChange={event => setErrorMessage(event.target.value)} /><textarea className="stack-input" aria-label="Stack trace" placeholder="Stack trace (optional)" value={stackTrace} onChange={event => setStackTrace(event.target.value)} /></Card> }
