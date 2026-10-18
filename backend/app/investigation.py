@@ -117,6 +117,7 @@ def investigate(project: dict[str, Any], question: str, error_message: str = "",
         hypotheses.append({"text": "The referenced name may be undefined in the imported snapshot or may be misspelled.", "confidence": "medium", "evidence": ["The error names a symbol that was not found in the index."]})
     if frames and evidence:
         hypotheses.append({"text": "The failing execution path should be inspected at the stack-trace location and its callers.", "confidence": "medium", "evidence": ["The stack trace resolves to indexed source lines."]})
+        limitations.append("A stack trace identifies where an exception surfaced; it does not prove the runtime root cause or that a related call caused it.")
     if not evidence:
         limitations.append("No stack-trace frame, symbol, import, or source line matched the indexed repository.")
         hypotheses.append({"text": "Available evidence is insufficient to identify a repository-grounded root cause.", "confidence": "low", "evidence": ["No relevant indexed evidence was found."]})
