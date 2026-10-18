@@ -147,6 +147,24 @@ def test_imported_projects_are_cleaned_after_retention_window(monkeypatch):
     assert "expired" not in PROJECTS
 
 
+def test_investigation_endpoint_accepts_error_and_stack_trace_fields():
+    project_id = import_zip(files={"app.py": "from missing import Client\n\ndef start():\n    return Client()\n"})
+    response = client.post(
+        f"/api/v1/projects/{project_id}/investigate",
+        json={
+            "question": "Why does startup fail?",
+            "error_message": "ModuleNotFoundError: No module named 'missing'",
+            "stack_trace": 'File "app.py", line 4, in start',
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]
+    assert body["confirmed_evidence"]
+    assert body["hypotheses"][0]["confidence"] == "high"
+
+
 def test_search_supports_empty_queries_paths_symbols_imports_and_ranking():
     project_id = import_zip(
         files={
