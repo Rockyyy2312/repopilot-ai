@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "buggy_app.py", line 5, in start_app
+    return Client().start()
+ModuleNotFoundError: No module named 'missing_service'
