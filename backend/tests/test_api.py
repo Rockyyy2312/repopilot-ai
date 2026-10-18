@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main as main_module
+from app.auth import reset_db
 from app.main import MAX_ARCHIVE_BYTES, PROJECTS, app, cleanup_projects
 
 client = TestClient(app)
@@ -13,6 +14,9 @@ client = TestClient(app)
 
 def setup_function():
     PROJECTS.clear()
+    reset_db()
+    response = client.post("/api/v1/auth/register", json={"email": "test@example.com", "password": "correct horse battery"})
+    assert response.status_code == 200
 
 
 def archive(name="repo.zip", files=None):
@@ -90,6 +94,29 @@ def test_analysis_endpoint_returns_tree_languages_and_limitations():
     assert body["tree"]["src"]["main.py"]["type"] == "file"
     assert "content" not in body["files"][0]
     assert "TOKEN" not in str(body)
+
+
+def test_auth_requires_login_and_logout_revokes_project_access():
+    PROJECTS.clear()
+    reset_db()
+    fresh = TestClient(app)
+    denied = fresh.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
+    assert denied.status_code == 401
+    assert fresh.post("/api/v1/auth/register", json={"email": "owner@example.com", "password": "correct horse battery"}).status_code == 200
+    project_id = fresh.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")}).json()["id"]
+    assert fresh.post("/api/v1/auth/logout").status_code == 200
+    assert fresh.get(f"/api/v1/projects/{project_id}/tree").status_code == 401
+
+
+def test_users_cannot_access_each_others_projects():
+    PROJECTS.clear()
+    reset_db()
+    first = TestClient(app)
+    second = TestClient(app)
+    assert first.post("/api/v1/auth/register", json={"email": "one@example.com", "password": "correct horse battery"}).status_code == 200
+    project_id = first.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")}).json()["id"]
+    assert second.post("/api/v1/auth/register", json={"email": "two@example.com", "password": "correct horse battery"}).status_code == 200
+    assert second.get(f"/api/v1/projects/{project_id}/tree").status_code == 404
 
 
 @pytest.mark.parametrize(

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.analysis import AnalysisConfig, analyze_files
 from app.analysis.engine import is_sensitive, safe_relative_path
 from app.investigation import investigate as run_investigation
+from app.auth import SESSION_COOKIE, SESSION_TTL, User, authenticate, create_session, create_user, delete_session, get_user
 
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 MAX_FILES = 5000
@@ -41,6 +42,11 @@ PROJECTS: dict[str, dict[str, Any]] = {}
 
 class GithubImport(BaseModel):
     url: str
+
+
+class AuthRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=10, max_length=200)
 
 
 class SearchRequest(BaseModel):
@@ -162,7 +168,7 @@ def import_to_dict(relation: Any) -> dict[str, Any]:
     return {"module": relation.module, "path": relation.location.path, "line": relation.location.line}
 
 
-def create_project(files: dict[str, str], source: dict[str, Any]) -> dict[str, Any]:
+def create_project(files: dict[str, str], source: dict[str, Any], user_id: str = "anonymous") -> dict[str, Any]:
     cleanup_projects()
     project_id = uuid.uuid4().hex
     result = analyze_files(files, ANALYSIS_CONFIG)
@@ -172,6 +178,7 @@ def create_project(files: dict[str, str], source: dict[str, Any]) -> dict[str, A
         "analysis": result,
         "index": {"symbols": [symbol_to_dict(item) for item in result.symbols], "imports": [import_to_dict(item) for item in result.imports]},
         "source": source,
+        "user_id": user_id,
         "created_at": time.time(),
         "accessed_at": time.time(),
     }
@@ -207,13 +214,26 @@ def import_response(project: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def get_project(project_id: str) -> dict[str, Any]:
+def current_user(session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> User:
+    user = get_user(session)
+    if not user:
+        raise HTTPException(401, "authentication required")
+    return user
+
+
+def get_project(project_id: str, user: User) -> dict[str, Any]:
     cleanup_projects()
     project = PROJECTS.get(project_id)
     if not project:
         raise HTTPException(404, "project not found")
+    if project.get("user_id") != user.id:
+        raise HTTPException(404, "project not found")
     project["accessed_at"] = time.time()
     return project
+
+
+def user_response(user: User) -> dict[str, str]:
+    return {"id": user.id, "email": user.email}
 
 
 @app.get("/api/v1/health")
@@ -221,31 +241,64 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/v1/auth/me")
+def auth_me(session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> dict[str, Any]:
+    user = get_user(session)
+    return {"authenticated": bool(user), "user": user_response(user) if user else None}
+
+
+@app.post("/api/v1/auth/register")
+def auth_register(payload: AuthRequest, response: Response) -> dict[str, Any]:
+    email = payload.email.strip().casefold()
+    try:
+        user = create_user(email, payload.password)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    response.set_cookie(SESSION_COOKIE, create_session(user.id), httponly=True, samesite="lax", max_age=SESSION_TTL, secure=False)
+    return {"user": user_response(user)}
+
+
+@app.post("/api/v1/auth/login")
+def auth_login(payload: AuthRequest, response: Response) -> dict[str, Any]:
+    user = authenticate(payload.email.strip().casefold(), payload.password)
+    if not user:
+        raise HTTPException(401, "invalid email or password")
+    response.set_cookie(SESSION_COOKIE, create_session(user.id), httponly=True, samesite="lax", max_age=SESSION_TTL, secure=False)
+    return {"user": user_response(user)}
+
+
+@app.post("/api/v1/auth/logout")
+def auth_logout(response: Response, session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> dict[str, bool]:
+    delete_session(session)
+    response.delete_cookie(SESSION_COOKIE)
+    return {"ok": True}
+
+
 @app.post("/api/v1/projects/import/github")
-def import_github(payload: GithubImport) -> dict[str, Any]:
+def import_github(payload: GithubImport, user: User = Depends(current_user)) -> dict[str, Any]:
     owner, repo = validate_github_url(payload.url)
     data = fetch_github_archive(owner, repo)
     files = extract_archive(data, f"{repo}.zip")
-    project = create_project(files, {"type": "github", "url": payload.url, "owner": owner, "repo": repo})
+    project = create_project(files, {"type": "github", "url": payload.url, "owner": owner, "repo": repo}, user.id)
     return import_response(project)
 
 
 @app.post("/api/v1/projects/import/archive")
-async def import_archive(file: UploadFile = File(...)) -> dict[str, Any]:
+async def import_archive(file: UploadFile = File(...), user: User = Depends(current_user)) -> dict[str, Any]:
     data = await file.read(MAX_ARCHIVE_BYTES + 1)
-    project = create_project(extract_archive(data, file.filename or ""), {"type": "archive", "filename": file.filename})
+    project = create_project(extract_archive(data, file.filename or ""), {"type": "archive", "filename": file.filename}, user.id)
     return import_response(project)
 
 
 @app.get("/api/v1/projects/{project_id}/tree")
-def tree(project_id: str) -> dict[str, Any]:
-    project = get_project(project_id)
+def tree(project_id: str, user: User = Depends(current_user)) -> dict[str, Any]:
+    project = get_project(project_id, user)
     return {"project_id": project_id, "files": sorted(project["files"]), "tree": project["analysis"].tree, "excluded": project["analysis"].excluded}
 
 
 @app.get("/api/v1/projects/{project_id}/files/{path:path}")
-def read_file(project_id: str, path: str) -> dict[str, Any]:
-    project = get_project(project_id)
+def read_file(project_id: str, path: str, user: User = Depends(current_user)) -> dict[str, Any]:
+    project = get_project(project_id, user)
     clean = safe_path(path)
     if clean not in project["files"]:
         raise HTTPException(404, "file not found")
@@ -253,14 +306,14 @@ def read_file(project_id: str, path: str) -> dict[str, Any]:
 
 
 @app.get("/api/v1/projects/{project_id}/analysis")
-def analysis(project_id: str) -> dict[str, Any]:
-    project = get_project(project_id)
+def analysis(project_id: str, user: User = Depends(current_user)) -> dict[str, Any]:
+    project = get_project(project_id, user)
     return project["analysis"].to_dict(include_content=False)
 
 
 @app.post("/api/v1/projects/{project_id}/search")
-def search(project_id: str, request: SearchRequest) -> dict[str, Any]:
-    project = get_project(project_id)
+def search(project_id: str, request: SearchRequest, user: User = Depends(current_user)) -> dict[str, Any]:
+    project = get_project(project_id, user)
     needle = request.query.casefold()
     if not needle:
         return {"query": request.query, "results": []}
@@ -310,8 +363,8 @@ def search_index(project: dict[str, Any], needle: str, requested_path: str | Non
 
 
 @app.post("/api/v1/projects/{project_id}/investigate")
-def investigate(project_id: str, request: InvestigationRequest) -> dict[str, Any]:
-    project = get_project(project_id)
+def investigate(project_id: str, request: InvestigationRequest, user: User = Depends(current_user)) -> dict[str, Any]:
+    project = get_project(project_id, user)
     report = run_investigation(project, request.question, request.error_message or request.query or "", request.stack_trace, request.file, request.symbol)
     report["findings"] = [{"type": "finding", **item} for item in report["confirmed_evidence"]]
     report["hypotheses"] = [{"type": "hypothesis", **item} for item in report["hypotheses"]]
@@ -319,16 +372,16 @@ def investigate(project_id: str, request: InvestigationRequest) -> dict[str, Any
 
 
 @app.get("/api/v1/projects/{project_id}/graph")
-def graph(project_id: str) -> dict[str, Any]:
-    project = get_project(project_id)
+def graph(project_id: str, user: User = Depends(current_user)) -> dict[str, Any]:
+    project = get_project(project_id, user)
     nodes = [{"id": path, "type": "file"} for path in sorted(project["files"])]
     edges = [{"from": item["path"], "to": item["module"], "evidence": {"line": int(item["line"]), "kind": "import"}} for item in project["index"]["imports"]]
     return {"nodes": nodes, "edges": edges}
 
 
 @app.get("/api/v1/projects/{project_id}/report")
-def report(project_id: str) -> dict[str, str]:
-    project = get_project(project_id)
+def report(project_id: str, user: User = Depends(current_user)) -> dict[str, str]:
+    project = get_project(project_id, user)
     lines = [f"# RepoPilot report", "", f"- Files: {len(project['files'])}", f"- Symbols: {len(project['index']['symbols'])}", f"- Imports: {len(project['index']['imports'])}", "", "## Symbols"]
     lines.extend(f"- `{s['name']}` — `{s['path']}:{s['line']}`" for s in project["index"]["symbols"])
     return {"markdown": "\n".join(lines)}
