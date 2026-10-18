@@ -15,6 +15,8 @@ The API is available under `/api/v1`. It keeps imported projects in memory and n
 
 Repository analysis is implemented in `app/analysis/`: discovery excludes generated, dependency, virtual-environment, cache, and sensitive paths; Python uses the standard-library AST parser; JavaScript/TypeScript use deterministic parser fallbacks; unsupported and invalid files remain represented with explicit limitations. `GET /api/v1/projects/{project_id}/analysis` returns the directory tree, detected languages, source-located symbols/imports, excluded paths, and parse errors. Limits can be adjusted with `REPOPILOT_MAX_FILES` and `REPOPILOT_MAX_FILE_BYTES`.
 
+Repository imports are isolated in memory and never execute repository code or install dependencies. Imports are cleaned up after one hour without an API access and the server retains at most 20 projects, evicting the least-recently-accessed project when the cap is exceeded. GitHub imports use a fixed `codeload.github.com` archive URL, a 15-second timeout, a 25 MiB compressed limit, and do not follow redirects. Archive imports accept ZIP, TAR, TAR.GZ, and TGZ files with a 50 MiB extracted-size limit.
+
 ## Test
 
 ```sh

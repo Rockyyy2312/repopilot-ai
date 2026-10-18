@@ -2,9 +2,11 @@ import io
 import tarfile
 import zipfile
 
+import pytest
 from fastapi.testclient import TestClient
 
-from app.main import PROJECTS, app
+from app import main as main_module
+from app.main import MAX_ARCHIVE_BYTES, PROJECTS, app, cleanup_projects
 
 client = TestClient(app)
 
@@ -76,3 +78,70 @@ def test_analysis_endpoint_returns_tree_languages_and_limitations():
     assert body["tree"]["src"]["main.py"]["type"] == "file"
     assert "content" not in body["files"][0]
     assert "TOKEN" not in str(body)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://github.com/owner/repo",
+        "https://gitlab.com/owner/repo",
+        "https://github.com/owner",
+        "https://user:password@github.com/owner/repo",
+        "https://github.com/owner/repo?redirect=https://evil.example",
+        "https://github.com:443/owner/repo",
+    ],
+)
+def test_github_import_rejects_malformed_unsupported_or_credential_urls(url):
+    response = client.post("/api/v1/projects/import/github", json={"url": url})
+
+    assert response.status_code == 400
+    assert "github.com/owner/repository" in response.json()["detail"]
+
+
+def test_github_import_analyzes_successful_public_archive(monkeypatch):
+    monkeypatch.setattr(main_module, "fetch_github_archive", lambda owner, repo: archive(files={"repo/main.py": "def main():\n    return 1\n"}))
+
+    response = client.post("/api/v1/projects/import/github", json={"url": "https://github.com/owner/repo"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["repository_name"] == "repo"
+    assert body["languages"] == {"python": 1}
+    assert body["symbol_count"] == 1
+    assert body["tree"]["repo"]["main.py"]["type"] == "file"
+
+
+def test_archive_import_rejects_invalid_type_and_malformed_content():
+    unsupported = client.post("/api/v1/projects/import/archive", files={"file": ("repo.rar", b"data", "application/octet-stream")})
+    malformed = client.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", b"not-a-zip", "application/zip")})
+
+    assert unsupported.status_code == 400
+    assert malformed.status_code == 400
+
+
+def test_archive_import_rejects_compressed_size_limit():
+    response = client.post(
+        "/api/v1/projects/import/archive",
+        files={"file": ("large.zip", b"x" * (MAX_ARCHIVE_BYTES + 1), "application/zip")},
+    )
+
+    assert response.status_code == 413
+
+
+def test_archive_import_rejects_extracted_size_limit(monkeypatch):
+    monkeypatch.setattr(main_module, "MAX_EXTRACTED_BYTES", 4)
+    response = client.post(
+        "/api/v1/projects/import/archive",
+        files={"file": ("expanded.zip", archive(files={"repo/main.py": "12345"}), "application/zip")},
+    )
+
+    assert response.status_code == 413
+
+
+def test_imported_projects_are_cleaned_after_retention_window(monkeypatch):
+    PROJECTS["expired"] = {"accessed_at": 0}
+    monkeypatch.setattr(main_module, "PROJECT_RETENTION_SECONDS", 1)
+
+    cleanup_projects()
+
+    assert "expired" not in PROJECTS

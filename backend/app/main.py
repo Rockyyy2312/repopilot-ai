@@ -4,10 +4,12 @@ import io
 import os
 import re
 import tarfile
+import time
 import uuid
 import urllib.request
 import zipfile
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -18,7 +20,11 @@ from app.analysis.engine import is_sensitive, safe_relative_path
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 MAX_FILES = 5000
 MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_EXTRACTED_BYTES = 50 * 1024 * 1024
 MAX_SEARCH_RESULTS = 100
+GITHUB_DOWNLOAD_TIMEOUT = 15
+PROJECT_RETENTION_SECONDS = 60 * 60
+MAX_PROJECTS = 20
 ANALYSIS_CONFIG = AnalysisConfig(
     max_files=int(os.environ.get("REPOPILOT_MAX_FILES", MAX_FILES)),
     max_file_bytes=int(os.environ.get("REPOPILOT_MAX_FILE_BYTES", MAX_FILE_BYTES)),
@@ -47,13 +53,24 @@ def fetch_github_archive(owner: str, repo: str) -> bytes:
     archive_url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/HEAD"
     request = urllib.request.Request(archive_url, headers={"User-Agent": "RepoPilot-AI/0.1"})
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        opener = urllib.request.build_opener(_NoRedirectHandler())
+        with opener.open(request, timeout=GITHUB_DOWNLOAD_TIMEOUT) as response:
+            content_length = response.headers.get("Content-Length")
+            if content_length and int(content_length) > MAX_ARCHIVE_BYTES:
+                raise HTTPException(413, "repository archive exceeds size limit")
             data = response.read(MAX_ARCHIVE_BYTES + 1)
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(502, "unable to fetch the public GitHub repository") from exc
+        raise HTTPException(502, "unable to download the public GitHub repository") from exc
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(413, "repository archive exceeds size limit")
     return data
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        raise OSError("redirects are not permitted")
 
 
 def safe_path(path: str) -> str:
@@ -64,9 +81,16 @@ def safe_path(path: str) -> str:
 
 
 def validate_github_url(url: str) -> tuple[str, str]:
-    m = re.fullmatch(r"https://github\.com/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})(?:\.git)?/?", url)
+    parsed = urlsplit(url)
+    try:
+        has_nonstandard_port = parsed.port is not None
+    except ValueError:
+        has_nonstandard_port = True
+    if parsed.scheme != "https" or parsed.hostname != "github.com" or parsed.username or parsed.password or parsed.query or parsed.fragment or has_nonstandard_port:
+        raise HTTPException(400, "url must be a public https://github.com/owner/repository URL")
+    m = re.fullmatch(r"/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})(?:\.git)?/?", parsed.path)
     if not m:
-        raise HTTPException(400, "url must be an https GitHub repository URL")
+        raise HTTPException(400, "url must be a public https://github.com/owner/repository URL")
     return m.group(1), m.group(2).removesuffix(".git")
 
 
@@ -74,10 +98,11 @@ def extract_archive(data: bytes, filename: str) -> dict[str, str]:
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(413, "archive exceeds size limit")
     files: dict[str, str] = {}
+    extracted_bytes = 0
     try:
         if filename.lower().endswith(".zip"):
             source = zipfile.ZipFile(io.BytesIO(data))
-            members = [(i.filename, not i.is_dir(), lambda i=i: source.open(i)) for i in source.infolist()]
+            members = [(i.filename, not i.is_dir() and not _zip_info_is_symlink(i), lambda i=i: source.open(i)) for i in source.infolist()]
         elif filename.lower().endswith((".tar.gz", ".tgz", ".tar")):
             source = tarfile.open(fileobj=io.BytesIO(data), mode="r:*")
             members = [(i.name, i.isfile(), lambda i=i: source.extractfile(i)) for i in source.getmembers()]
@@ -97,6 +122,9 @@ def extract_archive(data: bytes, filename: str) -> dict[str, str]:
             content = handle.read(MAX_FILE_BYTES + 1)
             if len(content) > MAX_FILE_BYTES:
                 raise HTTPException(413, f"file exceeds size limit: {clean}")
+            extracted_bytes += len(content)
+            if extracted_bytes > MAX_EXTRACTED_BYTES:
+                raise HTTPException(413, "archive extracted size exceeds limit")
             try:
                 files[clean] = content.decode("utf-8")
             except UnicodeDecodeError:
@@ -105,6 +133,11 @@ def extract_archive(data: bytes, filename: str) -> dict[str, str]:
     except (zipfile.BadZipFile, tarfile.TarError, OSError) as exc:
         raise HTTPException(400, "invalid archive") from exc
     return files
+
+
+def _zip_info_is_symlink(info: zipfile.ZipInfo) -> bool:
+    mode = (info.external_attr >> 16) & 0o170000
+    return mode == 0o120000
 
 
 def index_files(files: dict[str, str]) -> dict[str, Any]:
@@ -124,6 +157,7 @@ def import_to_dict(relation: Any) -> dict[str, Any]:
 
 
 def create_project(files: dict[str, str], source: dict[str, Any]) -> dict[str, Any]:
+    cleanup_projects()
     project_id = uuid.uuid4().hex
     result = analyze_files(files, ANALYSIS_CONFIG)
     project = {
@@ -132,15 +166,47 @@ def create_project(files: dict[str, str], source: dict[str, Any]) -> dict[str, A
         "analysis": result,
         "index": {"symbols": [symbol_to_dict(item) for item in result.symbols], "imports": [import_to_dict(item) for item in result.imports]},
         "source": source,
+        "created_at": time.time(),
+        "accessed_at": time.time(),
     }
     PROJECTS[project_id] = project
+    while len(PROJECTS) > MAX_PROJECTS:
+        oldest = min(PROJECTS, key=lambda item: PROJECTS[item].get("accessed_at", 0))
+        del PROJECTS[oldest]
     return project
 
 
+def cleanup_projects() -> None:
+    cutoff = time.time() - PROJECT_RETENTION_SECONDS
+    for project_id, project in list(PROJECTS.items()):
+        if project.get("accessed_at", project.get("created_at", 0)) < cutoff:
+            del PROJECTS[project_id]
+
+
+def import_response(project: dict[str, Any]) -> dict[str, Any]:
+    result = project["analysis"]
+    warnings = result.excluded + result.errors + [{"path": item.path, "reason": item.limitation or ""} for item in result.files if item.limitation]
+    return {
+        "id": project["id"],
+        "repository_name": project["source"]["repo"] if project["source"]["type"] == "github" else project["source"].get("filename", "uploaded-repository"),
+        "source": project["source"],
+        "file_count": len(project["files"]),
+        "languages": result.languages,
+        "symbol_count": len(result.symbols),
+        "import_count": len(result.imports),
+        "tree": result.tree,
+        "warnings": warnings,
+        "analysis": result.to_dict(include_content=False),
+        "index": project["index"],
+    }
+
+
 def get_project(project_id: str) -> dict[str, Any]:
+    cleanup_projects()
     project = PROJECTS.get(project_id)
     if not project:
         raise HTTPException(404, "project not found")
+    project["accessed_at"] = time.time()
     return project
 
 
@@ -155,14 +221,14 @@ def import_github(payload: GithubImport) -> dict[str, Any]:
     data = fetch_github_archive(owner, repo)
     files = extract_archive(data, f"{repo}.zip")
     project = create_project(files, {"type": "github", "url": payload.url, "owner": owner, "repo": repo})
-    return {"id": project["id"], "source": project["source"], "file_count": len(files), "analysis": project["analysis"].to_dict(include_content=False), "index": project["index"]}
+    return import_response(project)
 
 
 @app.post("/api/v1/projects/import/archive")
 async def import_archive(file: UploadFile = File(...)) -> dict[str, Any]:
     data = await file.read(MAX_ARCHIVE_BYTES + 1)
     project = create_project(extract_archive(data, file.filename or ""), {"type": "archive", "filename": file.filename})
-    return {"id": project["id"], "source": project["source"], "file_count": len(project["files"]), "analysis": project["analysis"].to_dict(include_content=False), "index": project["index"]}
+    return import_response(project)
 
 
 @app.get("/api/v1/projects/{project_id}/tree")
