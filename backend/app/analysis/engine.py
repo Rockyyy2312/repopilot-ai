@@ -21,11 +21,17 @@ class AnalysisConfig:
     max_file_bytes: int = 2 * 1024 * 1024
     excluded_dirs: frozenset[str] = DEFAULT_EXCLUDED_DIRS
 
+    def __post_init__(self) -> None:
+        if self.max_files < 1:
+            raise ValueError("max_files must be positive")
+        if self.max_file_bytes < 1:
+            raise ValueError("max_file_bytes must be positive")
+
 
 def safe_relative_path(path: str) -> str:
     normalized = path.replace("\\", "/")
     parsed = PurePosixPath(normalized)
-    if not normalized or parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
+    if not normalized or "\x00" in normalized or parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
         raise ValueError("invalid relative path")
     return "/".join(parsed.parts)
 
