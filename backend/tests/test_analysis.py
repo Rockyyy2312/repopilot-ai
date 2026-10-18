@@ -8,11 +8,26 @@ from app.analysis.engine import AnalysisConfig, analyze_files, discover_files, s
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "repository"
 
 
-def test_discovery_excludes_sensitive_and_generated_directories():
-    files, excluded = discover_files(FIXTURE_ROOT)
+def test_discovery_excludes_sensitive_and_generated_directories(tmp_path):
+    # Docker intentionally omits node_modules from its build context. Create
+    # exclusion fixtures at test time so the security check also runs there.
+    for name in ("app.py", "invalid.py", "service.ts", "ui.ts"):
+        (tmp_path / name).write_bytes((FIXTURE_ROOT / name).read_bytes())
+    (tmp_path / ".env").write_text("PLACEHOLDER=not-a-secret\n", encoding="utf-8")
+    dependency_dir = tmp_path / "node_modules"
+    dependency_dir.mkdir()
+    (dependency_dir / "ignored.js").write_text(
+        'require("should-not-be-read");\n', encoding="utf-8"
+    )
+
+    files, excluded = discover_files(tmp_path)
 
     assert sorted(files) == ["app.py", "invalid.py", "service.ts", "ui.ts"]
     assert {item["path"] for item in excluded} >= {".env", "node_modules"}
+    assert {"path": "node_modules", "reason": "excluded directory"} in excluded
+    assert {"path": ".env", "reason": "sensitive file"} in excluded
+    # Pruned directories are reported once, not as individual child files.
+    assert "node_modules/ignored.js" not in {item["path"] for item in excluded}
 
 
 def test_analysis_extracts_python_and_typescript_symbols_and_imports():
