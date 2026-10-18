@@ -15,6 +15,7 @@ backend/*.pyc
 .env
 .env.*
 !.env.example
+!backend/tests/fixtures/repository/.env
 .DS_Store
 .idea/
 .vscode/
