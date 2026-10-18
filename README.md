@@ -34,7 +34,7 @@ npm ci
 npm run dev
 ```
 
-The backend is available at `http://127.0.0.1:8000`; the frontend is available at `http://127.0.0.1:5173`. The frontend currently calls `/api/v1`, so use a local reverse proxy or the Vite proxy when running the two servers on separate ports.
+The backend is available at `http://127.0.0.1:8000`; the frontend is available at `http://127.0.0.1:5173`. The frontend calls `/api/v1` relative to its origin. For local two-process development, configure a development proxy if the frontend needs to call the backend across ports.
 
 ## Health checks
 
@@ -73,9 +73,36 @@ npm test
 
 The frontend uses `package-lock.json`; the backend pins all Python dependencies in `requirements.txt`.
 
-## Docker plan
+## Production Docker build
 
-`backend/Dockerfile` provides a reproducible backend image. The frontend has its own multi-stage `frontend/Dockerfile`. During the foundation phase these images are intentionally separate so they can be deployed independently; a later phase may add a compose file or a reverse-proxy image without changing the application contracts.
+The root `Dockerfile` is the production deployment path. It uses Node `22.12.0` to install the locked frontend dependencies and build the Vite bundle, then Python `3.11` to run FastAPI as the non-root `repopilot` user. The final image contains no `.env` files, Git metadata, Node toolchain, or imported repositories.
+
+Build and run:
+
+```sh
+docker build --pull -t repopilot-ai:local .
+docker run --rm --name repopilot-ai -p 8000:8000 --env-file .env repopilot-ai:local
+```
+
+The single-origin application is available at `http://127.0.0.1:8000/`; its API is at `http://127.0.0.1:8000/api/v1`. Verify both paths and the container health check:
+
+```sh
+curl http://127.0.0.1:8000/api/v1/health
+curl http://127.0.0.1:8000/
+docker inspect --format='{{json .State.Health}}' repopilot-ai
+```
+
+The image build runs the frontend tests/build and backend tests in isolated build stages. After the image/dependency layers are present, test targets can run without network access:
+
+```sh
+docker build --target backend-test -t repopilot-ai-backend-tests .
+docker run --rm --network none repopilot-ai-backend-tests python -m pytest -q
+
+docker build --target frontend-test -t repopilot-ai-frontend-tests .
+docker run --rm --network none repopilot-ai-frontend-tests npm test -- --run
+```
+
+The frontend communicates with the backend through the same-origin `/api/v1` path in the production image, so no CORS or separate frontend service is required.
 
 ## Repository hygiene
 
