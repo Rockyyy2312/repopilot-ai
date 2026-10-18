@@ -28,7 +28,7 @@ def test_investigation_reports_import_evidence_and_ranked_hypothesis():
     assert {(item["path"], item["line"]) for item in report["confirmed_evidence"]} >= {("buggy_app.py", 1), ("buggy_app.py", 4)}
     assert report["hypotheses"][0]["confidence"] == "high"
     assert report["relevant_files"][0]["symbols"][0]["name"] == "start_app"
-    assert report["limitations"] == []
+    assert any("does not prove" in limitation for limitation in report["limitations"])
 
 
 def test_investigation_is_inconclusive_without_matching_evidence():

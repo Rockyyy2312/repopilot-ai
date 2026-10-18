@@ -68,6 +68,18 @@ def test_graph_contains_import_evidence():
     assert edge["evidence"]["line"] == 1
 
 
+def test_graph_contains_only_direct_import_relationships():
+    project_id = import_zip(files={"src/a.py": "import helpers\ndef run():\n    return helpers.value\n", "src/helpers.py": "value = 1\n"})
+
+    graph = client.get(f"/api/v1/projects/{project_id}/graph").json()
+
+    assert {node["id"] for node in graph["nodes"]} == {"src/a.py", "src/helpers.py"}
+    assert len(graph["edges"]) == 1
+    assert graph["edges"][0]["from"] == "src/a.py"
+    assert graph["edges"][0]["to"] == "helpers"
+    assert graph["edges"][0]["evidence"] == {"line": 1, "kind": "import"}
+
+
 def test_analysis_endpoint_returns_tree_languages_and_limitations():
     project_id = import_zip(files={"src/main.py": "def main():\n    return 1\n", ".env": "TOKEN=secret"})
     result = client.get(f"/api/v1/projects/{project_id}/analysis")
@@ -134,6 +146,28 @@ def test_archive_import_rejects_extracted_size_limit(monkeypatch):
         "/api/v1/projects/import/archive",
         files={"file": ("expanded.zip", archive(files={"repo/main.py": "12345"}), "application/zip")},
     )
+
+    assert response.status_code == 413
+
+
+def test_archive_import_skips_zip_symlink_entries():
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        info = zipfile.ZipInfo("repo/link.py")
+        info.create_system = 3
+        info.external_attr = 0o120777 << 16
+        z.writestr(info, "../outside.py")
+        z.writestr("repo/main.py", "def main():\n    return 1\n")
+
+    response = client.post("/api/v1/projects/import/archive", files={"file": ("links.zip", out.getvalue(), "application/zip")})
+
+    assert response.status_code == 200
+    assert response.json()["file_count"] == 1
+
+
+def test_archive_import_rejects_excessive_member_metadata(monkeypatch):
+    monkeypatch.setattr(main_module, "MAX_ARCHIVE_MEMBERS", 1)
+    response = client.post("/api/v1/projects/import/archive", files={"file": ("many.zip", archive(files={"a.py": "x", "b.py": "x"}), "application/zip")})
 
     assert response.status_code == 413
 
