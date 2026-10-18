@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import tarfile
 import uuid
 import urllib.request
 import zipfile
-from pathlib import PurePosixPath
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from app.analysis import AnalysisConfig, analyze_files
+from app.analysis.engine import is_sensitive, safe_relative_path
+
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 MAX_FILES = 5000
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_SEARCH_RESULTS = 100
+ANALYSIS_CONFIG = AnalysisConfig(
+    max_files=int(os.environ.get("REPOPILOT_MAX_FILES", MAX_FILES)),
+    max_file_bytes=int(os.environ.get("REPOPILOT_MAX_FILE_BYTES", MAX_FILE_BYTES)),
+)
 
 app = FastAPI(title="RepoPilot AI", version="0.1.0")
 PROJECTS: dict[str, dict[str, Any]] = {}
@@ -50,11 +57,10 @@ def fetch_github_archive(owner: str, repo: str) -> bytes:
 
 
 def safe_path(path: str) -> str:
-    path = path.replace("\\", "/").strip("/")
-    p = PurePosixPath(path)
-    if not path or p.is_absolute() or any(part in ("", ".", "..") for part in p.parts):
-        raise HTTPException(400, "invalid path")
-    return "/".join(p.parts)
+    try:
+        return safe_relative_path(path)
+    except ValueError as exc:
+        raise HTTPException(400, "invalid path") from exc
 
 
 def validate_github_url(url: str) -> tuple[str, str]:
@@ -81,6 +87,8 @@ def extract_archive(data: bytes, filename: str) -> dict[str, str]:
             if not regular:
                 continue
             clean = safe_path(name)
+            if is_sensitive(clean):
+                continue
             if len(files) >= MAX_FILES:
                 raise HTTPException(413, "archive contains too many files")
             handle = opener()
@@ -92,7 +100,7 @@ def extract_archive(data: bytes, filename: str) -> dict[str, str]:
             try:
                 files[clean] = content.decode("utf-8")
             except UnicodeDecodeError:
-                files[clean] = content.decode("utf-8", errors="replace")
+                continue
         source.close()
     except (zipfile.BadZipFile, tarfile.TarError, OSError) as exc:
         raise HTTPException(400, "invalid archive") from exc
@@ -100,23 +108,31 @@ def extract_archive(data: bytes, filename: str) -> dict[str, str]:
 
 
 def index_files(files: dict[str, str]) -> dict[str, Any]:
-    symbols: list[dict[str, str]] = []
-    imports: list[dict[str, str]] = []
-    for path in sorted(files):
-        text = files[path]
-        for line_no, line in enumerate(text.splitlines(), 1):
-            match = re.match(r"^\s*(?:def|class|function|interface|type|const)\s+([A-Za-z_$][\w$]*)", line)
-            if match:
-                symbols.append({"name": match.group(1), "path": path, "line": str(line_no)})
-            match = re.match(r"^\s*(?:import\s+(.+?)\s+from|import\s+['\"](.+?)['\"]|import\s+([A-Za-z0-9_./-]+)|from\s+(.+?)\s+import|require\(['\"](.+?)['\"]\))", line)
-            if match:
-                imports.append({"module": next(x for x in match.groups() if x), "path": path, "line": str(line_no)})
-    return {"symbols": symbols, "imports": imports}
+    result = analyze_files(files, ANALYSIS_CONFIG)
+    return {
+        "symbols": [symbol_to_dict(item) for item in result.symbols],
+        "imports": [import_to_dict(item) for item in result.imports],
+    }
+
+
+def symbol_to_dict(symbol: Any) -> dict[str, Any]:
+    return {"name": symbol.name, "kind": symbol.kind, "path": symbol.location.path, "line": symbol.location.line}
+
+
+def import_to_dict(relation: Any) -> dict[str, Any]:
+    return {"module": relation.module, "path": relation.location.path, "line": relation.location.line}
 
 
 def create_project(files: dict[str, str], source: dict[str, Any]) -> dict[str, Any]:
     project_id = uuid.uuid4().hex
-    project = {"id": project_id, "files": files, "index": index_files(files), "source": source}
+    result = analyze_files(files, ANALYSIS_CONFIG)
+    project = {
+        "id": project_id,
+        "files": {item.path: item.content for item in result.files},
+        "analysis": result,
+        "index": {"symbols": [symbol_to_dict(item) for item in result.symbols], "imports": [import_to_dict(item) for item in result.imports]},
+        "source": source,
+    }
     PROJECTS[project_id] = project
     return project
 
@@ -139,20 +155,20 @@ def import_github(payload: GithubImport) -> dict[str, Any]:
     data = fetch_github_archive(owner, repo)
     files = extract_archive(data, f"{repo}.zip")
     project = create_project(files, {"type": "github", "url": payload.url, "owner": owner, "repo": repo})
-    return {"id": project["id"], "source": project["source"], "file_count": len(files), "index": project["index"]}
+    return {"id": project["id"], "source": project["source"], "file_count": len(files), "analysis": project["analysis"].to_dict(include_content=False), "index": project["index"]}
 
 
 @app.post("/api/v1/projects/import/archive")
 async def import_archive(file: UploadFile = File(...)) -> dict[str, Any]:
     data = await file.read(MAX_ARCHIVE_BYTES + 1)
     project = create_project(extract_archive(data, file.filename or ""), {"type": "archive", "filename": file.filename})
-    return {"id": project["id"], "source": project["source"], "file_count": len(project["files"]), "index": project["index"]}
+    return {"id": project["id"], "source": project["source"], "file_count": len(project["files"]), "analysis": project["analysis"].to_dict(include_content=False), "index": project["index"]}
 
 
 @app.get("/api/v1/projects/{project_id}/tree")
 def tree(project_id: str) -> dict[str, Any]:
     project = get_project(project_id)
-    return {"project_id": project_id, "files": sorted(project["files"])}
+    return {"project_id": project_id, "files": sorted(project["files"]), "tree": project["analysis"].tree, "excluded": project["analysis"].excluded}
 
 
 @app.get("/api/v1/projects/{project_id}/files/{path:path}")
@@ -162,6 +178,12 @@ def read_file(project_id: str, path: str) -> dict[str, Any]:
     if clean not in project["files"]:
         raise HTTPException(404, "file not found")
     return {"path": clean, "content": project["files"][clean]}
+
+
+@app.get("/api/v1/projects/{project_id}/analysis")
+def analysis(project_id: str) -> dict[str, Any]:
+    project = get_project(project_id)
+    return project["analysis"].to_dict(include_content=False)
 
 
 @app.post("/api/v1/projects/{project_id}/search")
@@ -174,7 +196,7 @@ def search(project_id: str, request: SearchRequest) -> dict[str, Any]:
             continue
         for line_no, line in enumerate(project["files"][path].splitlines(), 1):
             if needle in line.casefold():
-                results.append({"path": path, "line": line_no, "text": line[:1000]})
+                results.append({"path": path, "line": line_no, "text": line[:1000], "kind": "content"})
                 if len(results) >= request.limit:
                     return {"query": request.query, "results": results}
     return {"query": request.query, "results": results}
