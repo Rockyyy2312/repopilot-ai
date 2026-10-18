@@ -145,3 +145,39 @@ def test_imported_projects_are_cleaned_after_retention_window(monkeypatch):
     cleanup_projects()
 
     assert "expired" not in PROJECTS
+
+
+def test_search_supports_empty_queries_paths_symbols_imports_and_ranking():
+    project_id = import_zip(
+        files={
+            "src/main.py": "import helpers\n\ndef run():\n    return 'run'\n\ndef run():\n    return 2\n",
+            "src/helpers.py": "class Helper:\n    pass\n",
+            "docs/run.md": "run is documented here\n",
+        }
+    )
+
+    assert client.post(f"/api/v1/projects/{project_id}/search", json={"query": ""}).json()["results"] == []
+    path_results = client.post(f"/api/v1/projects/{project_id}/search", json={"query": "helpers.py"}).json()["results"]
+    assert path_results[0]["path"] == "src/helpers.py"
+    assert path_results[0]["kind"] == "path"
+    assert path_results[0]["line"] == 1
+
+    symbol_results = client.post(f"/api/v1/projects/{project_id}/search", json={"query": "run"}).json()["results"]
+    assert [item["kind"] for item in symbol_results[:2]] == ["symbol", "symbol"]
+    assert [(item["path"], item["line"]) for item in symbol_results[:2]] == [("src/main.py", 3), ("src/main.py", 6)]
+
+    import_results = client.post(f"/api/v1/projects/{project_id}/search", json={"query": "helpers"}).json()["results"]
+    assert import_results[0]["kind"] == "import"
+    assert import_results[0]["line"] == 1
+    assert import_results[0]["language"] == "python"
+
+    scoped = client.post(f"/api/v1/projects/{project_id}/search", json={"query": "run", "path": "docs"}).json()["results"]
+    assert [(item["path"], item["line"]) for item in scoped] == [("docs/run.md", 1)]
+
+
+def test_search_excludes_sensitive_files_and_reports_no_results():
+    project_id = import_zip(files={"src/main.py": "def safe():\n    return True\n", ".env": "safe=secret"})
+
+    result = client.post(f"/api/v1/projects/{project_id}/search", json={"query": "secret"}).json()
+
+    assert result["results"] == []
