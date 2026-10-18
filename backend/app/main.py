@@ -39,7 +39,7 @@ class GithubImport(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=200)
+    query: str = Field(min_length=0, max_length=200)
     path: str | None = None
     limit: int = Field(default=50, ge=1, le=MAX_SEARCH_RESULTS)
 
@@ -256,16 +256,51 @@ def analysis(project_id: str) -> dict[str, Any]:
 def search(project_id: str, request: SearchRequest) -> dict[str, Any]:
     project = get_project(project_id)
     needle = request.query.casefold()
-    results = []
-    for path in sorted(project["files"]):
-        if request.path and not path.startswith(safe_path(request.path)):
-            continue
-        for line_no, line in enumerate(project["files"][path].splitlines(), 1):
-            if needle in line.casefold():
-                results.append({"path": path, "line": line_no, "text": line[:1000], "kind": "content"})
-                if len(results) >= request.limit:
-                    return {"query": request.query, "results": results}
+    if not needle:
+        return {"query": request.query, "results": []}
+    results = search_index(project, needle, request.path, request.limit)
     return {"query": request.query, "results": results}
+
+
+def search_index(project: dict[str, Any], needle: str, requested_path: str | None, limit: int) -> list[dict[str, Any]]:
+    path_prefix = safe_path(requested_path) if requested_path else None
+    files_by_path = {item.path: item for item in project["analysis"].files}
+    candidates: dict[tuple[str, int], dict[str, Any]] = {}
+
+    def add(path: str, line: int, kind: str, score: int, text: str) -> None:
+        if path_prefix and not (path == path_prefix or path.startswith(path_prefix + "/")):
+            return
+        key = (path, line)
+        current = candidates.get(key)
+        result = {"path": path, "line": line, "text": text[:1000], "kind": kind, "language": files_by_path[path].language}
+        if current is None or score > current["_score"]:
+            result["_score"] = score
+            candidates[key] = result
+
+    for path, file in files_by_path.items():
+        path_lower = path.casefold()
+        if needle in path_lower:
+            exact_path = needle == path_lower or needle == path.rsplit("/", 1)[-1].casefold()
+            add(path, 1, "path", 80 if exact_path else 70, path)
+        lines = file.content.splitlines()
+        for line_number, line in enumerate(lines, 1):
+            if needle in line.casefold():
+                add(path, line_number, "content", 50, line)
+
+    for symbol in project["analysis"].symbols:
+        if symbol.name.casefold() == needle:
+            text = files_by_path[symbol.location.path].content.splitlines()[symbol.location.line - 1]
+            add(symbol.location.path, symbol.location.line, "symbol", 100, text)
+
+    for relation in project["analysis"].imports:
+        if relation.module.casefold() == needle:
+            text = files_by_path[relation.location.path].content.splitlines()[relation.location.line - 1]
+            add(relation.location.path, relation.location.line, "import", 90, text)
+
+    ranked = sorted(candidates.values(), key=lambda item: (-item["_score"], item["path"], item["line"]))
+    for result in ranked:
+        result.pop("_score", None)
+    return ranked[:limit]
 
 
 @app.post("/api/v1/projects/{project_id}/investigate")
