@@ -1,6 +1,6 @@
 # RepoPilot AI
 
-RepoPilot AI is organized as a separate Vite/React frontend and FastAPI backend. This phase establishes a reproducible repository foundation and health checks; product functionality is developed incrementally in later phases.
+RepoPilot AI is deployed as one container: a FastAPI application serves `/api/v1` and the production Vite bundle from the same origin. This avoids a production proxy dependency and keeps frontend API calls relative and reproducible.
 
 ## Supported runtimes
 
