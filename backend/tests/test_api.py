@@ -64,3 +64,15 @@ def test_graph_contains_import_evidence():
     edge = next(edge for edge in graph["edges"] if edge["from"] == "repo/main.py")
     assert edge["to"] == "util"
     assert edge["evidence"]["line"] == 1
+
+
+def test_analysis_endpoint_returns_tree_languages_and_limitations():
+    project_id = import_zip(files={"src/main.py": "def main():\n    return 1\n", ".env": "TOKEN=secret"})
+    result = client.get(f"/api/v1/projects/{project_id}/analysis")
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["languages"] == {"python": 1}
+    assert body["tree"]["src"]["main.py"]["type"] == "file"
+    assert "content" not in body["files"][0]
+    assert "TOKEN" not in str(body)
