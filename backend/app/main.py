@@ -22,6 +22,7 @@ MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 MAX_FILES = 5000
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 50 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = MAX_FILES * 2
 MAX_SEARCH_RESULTS = 100
 GITHUB_DOWNLOAD_TIMEOUT = 15
 PROJECT_RETENTION_SECONDS = 60 * 60
@@ -107,10 +108,15 @@ def extract_archive(data: bytes, filename: str) -> dict[str, str]:
     try:
         if filename.lower().endswith(".zip"):
             source = zipfile.ZipFile(io.BytesIO(data))
+            if len(source.infolist()) > MAX_ARCHIVE_MEMBERS:
+                raise HTTPException(413, "archive contains too many entries")
             members = [(i.filename, not i.is_dir() and not _zip_info_is_symlink(i), lambda i=i: source.open(i)) for i in source.infolist()]
         elif filename.lower().endswith((".tar.gz", ".tgz", ".tar")):
             source = tarfile.open(fileobj=io.BytesIO(data), mode="r:*")
-            members = [(i.name, i.isfile(), lambda i=i: source.extractfile(i)) for i in source.getmembers()]
+            archive_members = source.getmembers()
+            if len(archive_members) > MAX_ARCHIVE_MEMBERS:
+                raise HTTPException(413, "archive contains too many entries")
+            members = [(i.name, i.isfile(), lambda i=i: source.extractfile(i)) for i in archive_members]
         else:
             raise HTTPException(400, "archive must be .zip, .tar, or .tar.gz")
         for name, regular, opener in members:
@@ -143,14 +149,6 @@ def extract_archive(data: bytes, filename: str) -> dict[str, str]:
 def _zip_info_is_symlink(info: zipfile.ZipInfo) -> bool:
     mode = (info.external_attr >> 16) & 0o170000
     return mode == 0o120000
-
-
-def index_files(files: dict[str, str]) -> dict[str, Any]:
-    result = analyze_files(files, ANALYSIS_CONFIG)
-    return {
-        "symbols": [symbol_to_dict(item) for item in result.symbols],
-        "imports": [import_to_dict(item) for item in result.imports],
-    }
 
 
 def symbol_to_dict(symbol: Any) -> dict[str, Any]:
