@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.analysis import AnalysisConfig, analyze_files
 from app.analysis.engine import is_sensitive, safe_relative_path
+from app.investigation import investigate as run_investigation
 
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 MAX_FILES = 5000
@@ -46,6 +47,10 @@ class SearchRequest(BaseModel):
 
 class InvestigationRequest(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
+    error_message: str = Field(default="", max_length=2000)
+    stack_trace: str = Field(default="", max_length=10000)
+    file: str | None = Field(default=None, max_length=500)
+    symbol: str | None = Field(default=None, max_length=200)
     query: str | None = Field(default=None, max_length=200)
 
 
@@ -306,11 +311,10 @@ def search_index(project: dict[str, Any], needle: str, requested_path: str | Non
 @app.post("/api/v1/projects/{project_id}/investigate")
 def investigate(project_id: str, request: InvestigationRequest) -> dict[str, Any]:
     project = get_project(project_id)
-    query = request.query or request.question
-    result = search(project_id, SearchRequest(query=query, limit=20))
-    findings = [{"type": "finding", **item} for item in result["results"]]
-    hypotheses = [] if findings else [{"type": "hypothesis", "text": "No matching evidence was found; inspect callers and runtime configuration."}]
-    return {"question": request.question, "findings": findings, "hypotheses": hypotheses}
+    report = run_investigation(project, request.question, request.error_message or request.query or "", request.stack_trace, request.file, request.symbol)
+    report["findings"] = [{"type": "finding", **item} for item in report["confirmed_evidence"]]
+    report["hypotheses"] = [{"type": "hypothesis", **item} for item in report["hypotheses"]]
+    return report
 
 
 @app.get("/api/v1/projects/{project_id}/graph")
