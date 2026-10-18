@@ -4,7 +4,7 @@ export type ImportResult = { module: string; location: Location }
 export type FileAnalysis = { path: string; language: string | null; size: number; symbols: SymbolResult[]; imports: ImportResult[]; status: string; limitation: string | null }
 export type Analysis = { files: FileAnalysis[]; tree: Record<string, unknown>; languages: Record<string, number>; symbols: SymbolResult[]; imports: ImportResult[]; excluded: Array<{ path: string; reason: string }>; errors: Array<{ path: string; reason: string }> }
 export type ImportResponse = { id: string; repository_name: string; source: { type: string; url?: string; filename?: string }; file_count: number; languages: Record<string, number>; symbol_count: number; import_count: number; tree: Record<string, unknown>; warnings: Array<{ path: string; reason: string }>; analysis: Analysis }
-export type SearchResult = { path: string; line: number; text: string; kind?: string }
+export type SearchResult = { path: string; line: number; text: string; kind: string; language: string | null }
 export type Investigation = { question: string; findings: Array<Record<string, unknown>>; hypotheses: Array<Record<string, unknown>> }
 export type Graph = { nodes: Array<{ id: string; type?: string }>; edges: Array<{ from: string; to: string; evidence?: { line: number; kind: string } }> }
 
@@ -21,7 +21,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const normalizeSearch = (data: unknown): SearchResult[] => {
   if (!data || typeof data !== 'object' || !Array.isArray((data as { results?: unknown }).results)) return []
-  return (data as { results: SearchResult[] }).results.filter((item) => item && typeof item.path === 'string' && typeof item.line === 'number' && typeof item.text === 'string')
+  return (data as { results: unknown[] }).results.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const result = item as Partial<SearchResult>
+    if (typeof result.path !== 'string' || typeof result.line !== 'number' || typeof result.text !== 'string') return []
+    return [{ path: result.path, line: result.line, text: result.text, kind: typeof result.kind === 'string' && result.kind ? result.kind : 'content', language: typeof result.language === 'string' ? result.language : null }]
+  })
 }
 
 export const importGithub = (url: string) => request<ImportResponse>('/projects/import/github', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) })
