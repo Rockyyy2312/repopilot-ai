@@ -96,7 +96,7 @@ function App() {
   if (authLoading) return <div className="app min-h-screen"><Header project={null} user={null} /><main className="loading-screen"><div className="loader-orb">✦</div><p>Checking your secure session…</p></main></div>
   if (!user) return <AuthLanding onAuthenticated={setUser} />
   if (route.name === 'not-found') return <div className="app min-h-screen"><Header project={project} user={user} onLogout={() => { void api.logout(); setUser(null) }} /><NotFound navigate={() => navigate('overview')} /></div>
-  if (!project && route.name !== 'landing') return <div className="app min-h-screen"><Header project={null} user={user} onLogout={() => { void api.logout(); setUser(null) }} /><section className="content standalone"><LandingCopy /><ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /></section></div>
+  if (!project) return <div className="app min-h-screen"><Header project={null} user={user} onLogout={() => { void api.logout(); setUser(null) }} /><section className="content standalone"><LandingCopy /><ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /></section></div>
   return <div className="app min-h-screen">
     <Header project={project} user={user} onLogout={() => { void api.logout(); sessionStorage.removeItem('repopilot.project'); setProject(null); setUser(null); window.history.replaceState({}, '', '/') }} />
     <main className="shell">
