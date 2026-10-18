@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.analysis import AnalysisConfig, analyze_files
 from app.analysis.engine import is_sensitive, safe_relative_path
@@ -335,4 +336,13 @@ def report(project_id: str) -> dict[str, str]:
 
 frontend_dist = Path(os.environ.get("FRONTEND_DIST_DIR", "/app/frontend-dist"))
 if frontend_dist.is_dir():
-    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+    class SPAStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope: dict[str, Any]):
+            try:
+                return await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code == 404 and scope.get("method") == "GET":
+                    return await super().get_response("index.html", scope)
+                raise
+
+    app.mount("/", SPAStaticFiles(directory=frontend_dist, html=True), name="frontend")
