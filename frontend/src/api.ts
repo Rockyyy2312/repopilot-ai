@@ -65,6 +65,7 @@ export const normalizeInvestigation = (data: unknown): Investigation => {
 export type Graph = { nodes: Array<{ id: string; type?: string }>; edges: Array<{ from: string; to: string; evidence?: { line: number; kind: string } }> }
 
 const base = '/api/v1'
+export type AuthUser = { id: string; email: string }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(base + url, init)
@@ -97,3 +98,7 @@ export const investigate = (id: string, input: InvestigationInput | string) => {
 }
 export const graph = (id: string) => request<Graph>(`/projects/${id}/graph`)
 export const report = (id: string) => request<{ markdown: string }>(`/projects/${id}/report`)
+export const me = () => request<{ authenticated: boolean; user: AuthUser | null }>('/auth/me')
+export const register = (email: string, password: string) => request<{ user: AuthUser }>('/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
+export const login = (email: string, password: string) => request<{ user: AuthUser }>('/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
+export const logout = () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' })

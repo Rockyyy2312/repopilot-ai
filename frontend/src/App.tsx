@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import * as api from './api'
 import { pathForRoute, routeForPath, type AppRoute, type RouteName } from './routing'
 import { Background, Controls, MiniMap, ReactFlow, type Edge, type Node } from '@xyflow/react'
@@ -28,6 +28,8 @@ function App() {
   const [graphData, setGraphData] = useState<api.Graph | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [user, setUser] = useState<api.AuthUser | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
 
   const tab: Tab = route.name === 'search' || route.name === 'investigate' || route.name === 'architecture' ? route.name : 'overview'
   const navigate = (name: Exclude<RouteName, 'landing' | 'not-found'>, replace = false) => {
@@ -35,6 +37,10 @@ function App() {
     if (replace) window.history.replaceState({}, '', path); else window.history.pushState({}, '', path)
     setRoute(routeForPath(path))
   }
+
+  useEffect(() => {
+    void api.me().then(result => { setUser(result.user); if (!result.authenticated) setProject(null) }).catch(() => setUser(null)).finally(() => setAuthLoading(false))
+  }, [])
 
   useEffect(() => {
     const onPopState = () => setRoute(routeForPath(window.location.pathname))
@@ -87,22 +93,36 @@ function App() {
   const downloadReport = () => project && run(async () => { const { markdown } = await api.report(project.id); const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown' })); link.download = `${project.repository_name}-report.md`; link.click(); URL.revokeObjectURL(link.href) })
   const openFile = (path: string) => { setSelected(path); window.history.pushState({}, '', `/file/${encodeURIComponent(path)}`); setRoute({ name: 'overview', filePath: path }) }
 
-  if (route.name === 'not-found') return <div className="app min-h-screen"><Header project={project} /><NotFound navigate={() => navigate('overview')} /></div>
-  if (!project && route.name !== 'landing') return <div className="app min-h-screen"><Header project={null} /><section className="content standalone"><NotFound navigate={() => { window.history.pushState({}, '', '/'); setRoute({ name: 'landing' }) }} title="Import a repository first" detail="This workspace route needs an analyzed repository." /></section></div>
+  if (authLoading) return <div className="app min-h-screen"><Header project={null} user={null} /><main className="loading-screen"><div className="loader-orb">✦</div><p>Checking your secure session…</p></main></div>
+  if (!user) return <AuthLanding onAuthenticated={setUser} />
+  if (route.name === 'not-found') return <div className="app min-h-screen"><Header project={project} user={user} onLogout={() => { void api.logout(); setUser(null) }} /><NotFound navigate={() => navigate('overview')} /></div>
+  if (!project && route.name !== 'landing') return <div className="app min-h-screen"><Header project={null} user={user} onLogout={() => { void api.logout(); setUser(null) }} /><section className="content standalone"><LandingCopy /><ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /></section></div>
   return <div className="app min-h-screen">
-    <Header project={project} />
+    <Header project={project} user={user} onLogout={() => { void api.logout(); sessionStorage.removeItem('repopilot.project'); setProject(null); setUser(null); window.history.replaceState({}, '', '/') }} />
     <main className="shell">
       <Sidebar project={project} route={route} navigate={navigate} loadGraph={loadGraph} />
       <section className="content">
         <div className="topline"><div><div className="eyebrow">{project ? 'PROJECT ANALYSIS' : 'GET STARTED'}</div><h1>{project ? 'Understand your codebase.' : 'Bring a repository into focus.'}</h1><p className="subtitle">{project ? 'Trace evidence, inspect files, and turn questions into grounded findings.' : 'Import a public GitHub repository or local archive to explore it with evidence.'}</p></div>{project && <button className="outline" onClick={downloadReport}>{icon('↓')} Download report</button>}</div>
         {error && <Alert message={error} clear={() => setError('')} />}
-        {!project ? <ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /> : <Workspace project={project} tree={tree} selected={route.filePath || selected} setSelected={openFile} content={content} tab={tab} navigate={navigate} loading={loading} query={query} setQuery={setQuery} doSearch={doSearch} results={results} question={question} setQuestion={setQuestion} errorMessage={errorMessage} setErrorMessage={setErrorMessage} stackTrace={stackTrace} setStackTrace={setStackTrace} doInvestigation={doInvestigation} investigation={investigation} graphData={graphData} />}
+        {!project ? <><LandingCopy /><ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /></> : <Workspace project={project} tree={tree} selected={route.filePath || selected} setSelected={openFile} content={content} tab={tab} navigate={navigate} loading={loading} query={query} setQuery={setQuery} doSearch={doSearch} results={results} question={question} setQuestion={setQuestion} errorMessage={errorMessage} setErrorMessage={setErrorMessage} stackTrace={stackTrace} setStackTrace={setStackTrace} doInvestigation={doInvestigation} investigation={investigation} graphData={graphData} />}
       </section>
     </main>
   </div>
 }
 
-function Header({ project }: { project: api.ImportResponse | null }) { return <header><div className="brand"><div className="brand-mark">✦</div><div><b>RepoPilot</b><span>AI CODE INTELLIGENCE</span></div></div><div className="header-right"><span className="status-dot" /> API connected {project && <span className="header-repo">/ {project.repository_name}</span>}</div></header> }
+function Header({ project, user, onLogout }: { project: api.ImportResponse | null; user: api.AuthUser | null; onLogout?: () => void }) { return <header><div className="brand"><div className="brand-mark">✦</div><div><b>RepoPilot</b><span>AI CODE INTELLIGENCE</span></div></div><div className="header-right"><span className="status-dot" /> {project ? <span className="header-repo">{project.repository_name}</span> : 'Secure workspace'} {user && <><span className="user-email">{user.email}</span><button className="logout-button" onClick={onLogout}>Log out</button></>}</div></header> }
+
+function LandingCopy() { return <div className="landing-copy"><div className="eyebrow">CODE INTELLIGENCE WORKSPACE</div><h2>Understand every layer of your repository.</h2><p>Import a public codebase, trace evidence, and investigate issues without executing untrusted source.</p><div className="landing-points"><span>✦ Evidence-backed findings</span><span>⌁ Direct import relationships</span><span>◈ Private workspace session</span></div></div> }
+
+function AuthLanding({ onAuthenticated }: { onAuthenticated: (user: api.AuthUser) => void }) {
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { const result = mode === 'login' ? await api.login(email, password) : await api.register(email, password); onAuthenticated(result.user) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Authentication failed') } finally { setBusy(false) } }
+  return <div className="auth-page"><div className="auth-visual"><div className="brand"><div className="brand-mark">✦</div><div><b>RepoPilot</b><span>AI CODE INTELLIGENCE</span></div></div><div className="auth-hero"><div className="eyebrow">YOUR CODEBASE, IN FOCUS</div><h1>Make complex systems legible.</h1><p>Search evidence, inspect architecture, and investigate failures in one private workspace.</p></div><div className="auth-glow" /></div><div className="auth-panel"><div className="auth-panel-inner"><div className="eyebrow">{mode === 'login' ? 'WELCOME BACK' : 'CREATE WORKSPACE'}</div><h2>{mode === 'login' ? 'Sign in to RepoPilot' : 'Start your workspace'}</h2><p className="auth-detail">{mode === 'login' ? 'Continue your repository analysis session.' : 'Use a secure account to keep your workspace private.'}</p><form onSubmit={submit}><label>Email<input type="email" required autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} /></label><label>Password<input type="password" required minLength={10} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={password} onChange={event => setPassword(event.target.value)} /><small>At least 10 characters.</small></label>{error && <div className="auth-error" role="alert">{error}</div>}<button className="primary auth-submit" disabled={busy}>{busy ? 'Working…' : mode === 'login' ? 'Sign in →' : 'Create account →'}</button></form><button className="auth-switch" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }}>{mode === 'login' ? 'Need an account? Create one' : 'Already have an account? Sign in'}</button></div></div></div>
+}
 
 function Sidebar({ project, route, navigate, loadGraph }: { project: api.ImportResponse | null; route: AppRoute; navigate: (name: Exclude<RouteName, 'landing' | 'not-found'>) => void; loadGraph: () => void }) { return <aside><div className="eyebrow">WORKSPACE</div><div className="workspace"><div className="repo-icon">⌁</div><div><b>{project ? project.repository_name : 'Your workspace'}</b><small>{project ? project.source.url?.replace('https://github.com/', '') || project.source.filename : 'Import a codebase to begin'}</small></div></div><nav>{[['overview', '▦', 'Overview'], ['search', '⌕', 'Code search'], ['investigate', '◈', 'Investigate issue']].map(([value, glyph, label]) => <button key={value} className={route.name === value ? 'active' : ''} onClick={() => navigate(value as Exclude<RouteName, 'landing' | 'not-found'>)}>{icon(glyph)} {label}</button>)}<button className={route.name === 'architecture' ? 'active' : ''} onClick={loadGraph}>{icon('⌬')} Architecture</button></nav><div className="aside-foot"><div className="limit"><b>Evidence-first analysis</b><span>Results link back to source files and lines.</span></div><small>REPOPILOT AI · PHASE 3</small></div></aside> }
 
