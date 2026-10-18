@@ -64,7 +64,14 @@ def test_limits_reject_oversized_and_excess_files():
     assert limited.errors == [{"path": "b.py", "reason": "file count limit reached"}]
 
 
-@pytest.mark.parametrize("path", ["../escape.py", "/absolute.py", "dir/../escape.py", ""])
+@pytest.mark.parametrize("path", ["../escape.py", "/absolute.py", "dir/../escape.py", "", "safe\x00.py"])
 def test_relative_path_validation_rejects_traversal(path):
     with pytest.raises(ValueError):
         safe_relative_path(path)
+
+
+def test_analysis_config_rejects_invalid_limits():
+    with pytest.raises(ValueError):
+        AnalysisConfig(max_files=0)
+    with pytest.raises(ValueError):
+        AnalysisConfig(max_file_bytes=0)
