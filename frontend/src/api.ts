@@ -68,10 +68,12 @@ const base = '/api/v1'
 export type AuthUser = { id: string; email: string }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(base + url, init)
+  const response = await fetch(base + url, { credentials: 'include', ...init })
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { detail?: string } | null
-    throw new Error(body?.detail || `Request failed (${response.status})`)
+    const error = new Error(body?.detail || `Request failed (${response.status})`)
+    ;(error as Error & { status?: number }).status = response.status
+    throw error
   }
   return response.json() as Promise<T>
 }

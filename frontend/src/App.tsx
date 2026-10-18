@@ -30,6 +30,7 @@ function App() {
   const [error, setError] = useState('')
   const [user, setUser] = useState<api.AuthUser | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [authUnavailable, setAuthUnavailable] = useState(false)
 
   const tab: Tab = route.name === 'search' || route.name === 'investigate' || route.name === 'architecture' ? route.name : 'overview'
   const navigate = (name: Exclude<RouteName, 'landing' | 'not-found'>, replace = false) => {
@@ -39,7 +40,17 @@ function App() {
   }
 
   useEffect(() => {
-    void api.me().then(result => { setUser(result.user); if (!result.authenticated) setProject(null) }).catch(() => setUser(null)).finally(() => setAuthLoading(false))
+    void api.me().then(result => {
+      setAuthUnavailable(false)
+      setUser(result.user)
+      if (!result.authenticated) {
+        setProject(null)
+        sessionStorage.removeItem('repopilot.project')
+      }
+    }).catch(() => {
+      setUser(null)
+      setAuthUnavailable(true)
+    }).finally(() => setAuthLoading(false))
   }, [])
 
   useEffect(() => {
@@ -94,9 +105,10 @@ function App() {
   const openFile = (path: string) => { setSelected(path); window.history.pushState({}, '', `/file/${encodeURIComponent(path)}`); setRoute({ name: 'overview', filePath: path }) }
 
   if (authLoading) return <div className="app min-h-screen"><Header project={null} user={null} /><main className="loading-screen"><div className="loader-orb">✦</div><p>Checking your secure session…</p></main></div>
-  if (!user) return <AuthLanding onAuthenticated={setUser} />
+  if (authUnavailable) return <Unavailable onRetry={() => window.location.reload()} />
+  if (!user) return <AuthLanding onAuthenticated={(nextUser) => { setAuthUnavailable(false); setUser(nextUser) }} />
   if (route.name === 'not-found') return <div className="app min-h-screen"><Header project={project} user={user} onLogout={() => { void api.logout(); setUser(null) }} /><NotFound navigate={() => navigate('overview')} /></div>
-  if (!project) return <div className="app min-h-screen"><Header project={null} user={user} onLogout={() => { void api.logout(); setUser(null) }} /><section className="content standalone"><LandingCopy /><ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /></section></div>
+  if (!project) return <div className="app min-h-screen"><Header project={null} user={user} onLogout={() => { void api.logout(); setUser(null) }} /><main className="shell"><Sidebar project={null} route={route} navigate={navigate} loadGraph={() => setError('Import a repository before opening Architecture.')} /><section className="content"><LandingCopy /><ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /></section></main></div>
   return <div className="app min-h-screen">
     <Header project={project} user={user} onLogout={() => { void api.logout(); sessionStorage.removeItem('repopilot.project'); setProject(null); setUser(null); window.history.replaceState({}, '', '/') }} />
     <main className="shell">
@@ -113,6 +125,8 @@ function App() {
 function Header({ project, user, onLogout }: { project: api.ImportResponse | null; user: api.AuthUser | null; onLogout?: () => void }) { return <header><div className="brand"><div className="brand-mark">✦</div><div><b>RepoPilot</b><span>AI CODE INTELLIGENCE</span></div></div><div className="header-right"><span className="status-dot" /> {project ? <span className="header-repo">{project.repository_name}</span> : 'Secure workspace'} {user && <><span className="user-email">{user.email}</span><button className="logout-button" onClick={onLogout}>Log out</button></>}</div></header> }
 
 function LandingCopy() { return <div className="landing-copy"><div className="eyebrow">CODE INTELLIGENCE WORKSPACE</div><h2>Understand every layer of your repository.</h2><p>Import a public codebase, trace evidence, and investigate issues without executing untrusted source.</p><div className="landing-points"><span>✦ Evidence-backed findings</span><span>⌁ Direct import relationships</span><span>◈ Private workspace session</span></div></div> }
+
+function Unavailable({ onRetry }: { onRetry: () => void }) { return <div className="auth-page unavailable-page"><div className="auth-panel"><div className="auth-panel-inner"><div className="brand"><div className="brand-mark">✦</div><div><b>RepoPilot</b><span>AI CODE INTELLIGENCE</span></div></div><div className="eyebrow">WORKSPACE UNAVAILABLE</div><h2>Connect to the RepoPilot backend</h2><p className="auth-detail">The frontend could not reach the API. Start FastAPI on port 8000, then retry.</p><button className="primary auth-submit" onClick={onRetry}>Retry connection</button></div></div></div> }
 
 function AuthLanding({ onAuthenticated }: { onAuthenticated: (user: api.AuthUser) => void }) {
   const [mode, setMode] = useState<'login' | 'register'>('login')
