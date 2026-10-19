@@ -27,6 +27,8 @@ def setup_function():
     reset_db()
     response = client.post("/api/v1/auth/register", json={"email": "test@example.com", "password": "correct horse battery"})
     assert response.status_code == 200
+    login = client.post("/api/v1/auth/login", json={"email": "test@example.com", "password": "correct horse battery"})
+    assert login.status_code == 200
 
 
 def archive(name="repo.zip", files=None):
@@ -115,6 +117,7 @@ def test_auth_requires_login_and_logout_revokes_project_access():
     denied = fresh.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
     assert denied.status_code == 401
     assert fresh.post("/api/v1/auth/register", json={"email": "owner@example.com", "password": "correct horse battery"}).status_code == 200
+    assert fresh.post("/api/v1/auth/login", json={"email": "owner@example.com", "password": "correct horse battery"}).status_code == 200
     project_id = fresh.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")}).json()["id"]
     assert fresh.post("/api/v1/auth/logout").status_code == 200
     assert fresh.get(f"/api/v1/projects/{project_id}/tree").status_code == 401
@@ -126,8 +129,10 @@ def test_users_cannot_access_each_others_projects():
     first = BrowserTestClient(app)
     second = BrowserTestClient(app)
     assert first.post("/api/v1/auth/register", json={"email": "one@example.com", "password": "correct horse battery"}).status_code == 200
+    assert first.post("/api/v1/auth/login", json={"email": "one@example.com", "password": "correct horse battery"}).status_code == 200
     project_id = first.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")}).json()["id"]
     assert second.post("/api/v1/auth/register", json={"email": "two@example.com", "password": "correct horse battery"}).status_code == 200
+    assert second.post("/api/v1/auth/login", json={"email": "two@example.com", "password": "correct horse battery"}).status_code == 200
     assert second.get(f"/api/v1/projects/{project_id}/tree").status_code == 404
 
 
@@ -288,8 +293,10 @@ def test_project_quota_is_per_user(monkeypatch):
 
 
 def test_cookie_authenticated_mutation_requires_csrf_token():
-    plain = TestClient(app)
+    plain = BrowserTestClient(app)
     plain.post("/api/v1/auth/register", json={"email": "csrf@example.com", "password": "correct horse battery"})
+    plain.post("/api/v1/auth/login", json={"email": "csrf@example.com", "password": "correct horse battery"})
+    plain.cookies.pop(CSRF_COOKIE, None)
     response = plain.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
     assert response.status_code == 403
     assert response.json()["detail"] == "csrf validation failed"
@@ -365,3 +372,22 @@ def test_project_quota_counts_persisted_projects_after_cache_restart(monkeypatch
     PROJECTS.clear()
     response = client.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
     assert response.status_code == 429
+
+
+def test_registration_does_not_authenticate_and_login_does():
+    fresh = BrowserTestClient(app)
+    registered = fresh.post("/api/v1/auth/register", json={"email": "new@example.com", "password": "correct horse battery"})
+    assert registered.status_code == 200
+    assert registered.json()["registered"] is True
+    assert fresh.get("/api/v1/auth/me").json()["authenticated"] is False
+    login = fresh.post("/api/v1/auth/login", json={"email": "new@example.com", "password": "correct horse battery"})
+    assert login.status_code == 200
+    assert fresh.get("/api/v1/auth/me").json()["authenticated"] is True
+
+
+def test_login_rejects_incorrect_credentials_without_session():
+    fresh = BrowserTestClient(app)
+    fresh.post("/api/v1/auth/register", json={"email": "wrong@example.com", "password": "correct horse battery"})
+    response = fresh.post("/api/v1/auth/login", json={"email": "wrong@example.com", "password": "wrong password"})
+    assert response.status_code == 401
+    assert fresh.get("/api/v1/auth/me").json()["authenticated"] is False

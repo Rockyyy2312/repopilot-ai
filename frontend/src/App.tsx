@@ -53,6 +53,10 @@ function App() {
         setProject(restored)
         setTree(restored.analysis.files.map(file => file.path))
       }
+      if (route.name === 'landing' || route.name === 'login' || route.name === 'register') {
+        window.history.replaceState({}, '', '/workspace')
+        setRoute({ name: 'overview' })
+      }
     }).catch(() => {
       setUser(null)
       setAuthUnavailable(true)
@@ -66,8 +70,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (project && route.name === 'landing') navigate('overview', true)
-    if (!project && route.name !== 'landing' && route.name !== 'not-found') { window.history.replaceState({}, '', '/'); setRoute({ name: 'landing' }) }
+    if (project && (route.name === 'landing' || route.name === 'login' || route.name === 'register')) navigate('overview', true)
   }, [project, route.name])
 
   useEffect(() => {
@@ -124,14 +127,19 @@ function App() {
 
   if (authLoading) return <div className="app min-h-screen"><Header project={null} user={null} /><main className="loading-screen"><div className="loader-orb">✦</div><p>Checking your secure session…</p></main></div>
   if (authUnavailable) return <Unavailable onRetry={() => window.location.reload()} />
-  if (!user) return <AuthLanding onAuthenticated={(nextUser) => { setAuthUnavailable(false); setUser(nextUser) }} />
+  if (!user && route.name === 'not-found') return <NotFound title="Route not found" detail="Sign in to access RepoPilot, or return to the login page." navigate={() => { window.history.replaceState({}, '', '/login'); setRoute({ name: 'login' }) }} />
+  if (!user) return <AuthLanding
+    initialMode={route.name === 'register' ? 'register' : 'login'}
+    onModeChange={(mode) => { window.history.pushState({}, '', `/${mode}`); setRoute(routeForPath(`/${mode}`)) }}
+    onAuthenticated={(nextUser) => { setAuthUnavailable(false); setUser(nextUser); if (route.name === 'landing' || route.name === 'login' || route.name === 'register') navigate('overview', true) }}
+  />
   if (route.name === 'not-found') return <div className="app min-h-screen"><Header project={project} user={user} onLogout={() => { void api.logout(); clearWorkspace(); clearSessionCache(); setUser(null) }} /><NotFound navigate={() => navigate('overview')} /></div>
-  if (!project) return <div className="app min-h-screen"><a className="skip-link" href="#main-content">Skip to main content</a><Header project={null} user={user} onLogout={() => { void api.logout(); clearWorkspace(); clearSessionCache(); setUser(null) }} /><main className="shell"><Sidebar project={null} route={route} navigate={navigate} loadGraph={() => setError('Import a repository before opening Architecture.')} onBlocked={() => setError('Import a repository first to use this workspace tool.')} /><section id="main-content" className="content">{error && <Alert message={error} clear={() => setError('')} />}<LandingCopy /><ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /></section></main></div>
+  if (!project) return <div className="app min-h-screen"><a className="skip-link" href="#main-content">Skip to main content</a><Header project={null} user={user} onLogout={() => { void api.logout(); clearWorkspace(); clearSessionCache(); setUser(null) }} /><main className="shell"><Sidebar project={null} route={route} navigate={navigate} loadGraph={() => navigate('architecture')} onBlocked={() => undefined} /><section id="main-content" className="content">{error && <Alert message={error} clear={() => setError('')} />}<EmptyRouteContent route={route} url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} navigate={navigate} /></section></main></div>
   return <div className="app min-h-screen">
     <a className="skip-link" href="#main-content">Skip to main content</a>
     <Header project={project} user={user} onLogout={() => { void api.logout(); clearWorkspace(); clearSessionCache(); setUser(null); window.history.replaceState({}, '', '/') }} />
     <main className="shell">
-      <Sidebar project={project} route={route} navigate={navigate} loadGraph={loadGraph} onBlocked={() => setError('Import a repository first to use this workspace tool.')} />
+      <Sidebar project={project} route={route} navigate={navigate} loadGraph={loadGraph} onBlocked={() => undefined} />
       <section id="main-content" className="content">
         <div className="topline"><div><div className="eyebrow">{project ? 'PROJECT ANALYSIS' : 'GET STARTED'}</div><h1>{project ? 'Understand your codebase.' : 'Bring a repository into focus.'}</h1><p className="subtitle">{project ? 'Trace evidence, inspect files, and turn questions into grounded findings.' : 'Import a public GitHub repository or local archive to explore it with evidence.'}</p></div>{project && <button className="outline" onClick={downloadReport}>{icon('↓')} Download report</button>}</div>
         {error && <Alert message={error} clear={() => setError('')} />}
@@ -147,19 +155,46 @@ function LandingCopy() { return <div className="landing-copy"><div className="ey
 
 function Unavailable({ onRetry }: { onRetry: () => void }) { return <div className="auth-page unavailable-page"><div className="auth-panel"><div className="auth-panel-inner"><div className="brand"><div className="brand-mark">✦</div><div><b>RepoPilot</b><span>AI CODE INTELLIGENCE</span></div></div><div className="eyebrow">WORKSPACE UNAVAILABLE</div><h2>Connect to the RepoPilot backend</h2><p className="auth-detail">The frontend could not reach the API. Start FastAPI on port 8000, then retry.</p><button className="primary auth-submit" onClick={onRetry}>Retry connection</button></div></div></div> }
 
-function AuthLanding({ onAuthenticated }: { onAuthenticated: (user: api.AuthUser) => void }) {
-  const [mode, setMode] = useState<'login' | 'register'>('login')
+function AuthLanding({ initialMode, onModeChange, onAuthenticated }: { initialMode: 'login' | 'register'; onModeChange: (mode: 'login' | 'register') => void; onAuthenticated: (user: api.AuthUser) => void }) {
+  const [mode, setMode] = useState<'login' | 'register'>(initialMode)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { const result = mode === 'login' ? await api.login(email, password) : await api.register(email, password); onAuthenticated(result.user) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Authentication failed') } finally { setBusy(false) } }
-  return <div className="auth-page"><div className="auth-visual"><div className="brand"><div className="brand-mark">✦</div><div><b>RepoPilot</b><span>AI CODE INTELLIGENCE</span></div></div><div className="auth-hero"><div className="eyebrow">YOUR CODEBASE, IN FOCUS</div><h1>Make complex systems legible.</h1><p>Search evidence, inspect architecture, and investigate failures in one private workspace.</p></div><div className="auth-glow" /></div><div className="auth-panel"><div className="auth-panel-inner"><div className="eyebrow">{mode === 'login' ? 'WELCOME BACK' : 'CREATE WORKSPACE'}</div><h2>{mode === 'login' ? 'Sign in to RepoPilot' : 'Start your workspace'}</h2><p className="auth-detail">{mode === 'login' ? 'Continue your repository analysis session.' : 'Use a secure account to keep your workspace private.'}</p><form onSubmit={submit}><label>Email<input type="email" required autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} /></label><label>Password<input type="password" required minLength={10} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={password} onChange={event => setPassword(event.target.value)} /><small>At least 10 characters.</small></label>{error && <div className="auth-error" role="alert">{error}</div>}<button className="primary auth-submit" disabled={busy}>{busy ? 'Working…' : mode === 'login' ? 'Sign in →' : 'Create account →'}</button></form><button className="auth-switch" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }}>{mode === 'login' ? 'Need an account? Create one' : 'Already have an account? Sign in'}</button></div></div></div>
+  const [success, setSuccess] = useState('')
+  useEffect(() => setMode(initialMode), [initialMode])
+  const switchMode = (next: 'login' | 'register') => { setMode(next); setError(''); setSuccess(''); onModeChange(next) }
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setError(''); setSuccess('')
+    try {
+      if (mode === 'login') {
+        const result = await api.login(email.trim(), password)
+        onAuthenticated(result.user)
+      } else {
+        const result = await api.register(email.trim(), password)
+        if (!result.registered) throw new Error('Registration was not confirmed by the server')
+        setPassword(''); setMode('login'); onModeChange('login'); setSuccess('Account created successfully. Sign in to continue.')
+      }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Authentication failed') }
+    finally { setBusy(false) }
+  }
+  return <div className="auth-page"><div className="auth-visual"><div className="brand"><div className="brand-mark">✦</div><div><b>RepoPilot</b><span>AI CODE INTELLIGENCE</span></div></div><div className="auth-hero"><div className="eyebrow">YOUR CODEBASE, IN FOCUS</div><h1>Make complex systems legible.</h1><p>Search evidence, inspect architecture, and investigate failures in one private workspace.</p></div><div className="auth-glow" /></div><div className="auth-panel"><div className="auth-panel-inner"><div className="eyebrow">{mode === 'login' ? 'WELCOME BACK' : 'CREATE WORKSPACE'}</div><h2>{mode === 'login' ? 'Sign in to RepoPilot' : 'Start your workspace'}</h2><p className="auth-detail">{mode === 'login' ? 'Continue your repository analysis session.' : 'Create an account, then sign in to enter your workspace.'}</p><form onSubmit={submit}><label>Email<input type="email" required autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} /></label><label>Password<input type="password" required minLength={10} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={password} onChange={event => setPassword(event.target.value)} /><small>At least 10 characters.</small></label>{success && <div className="auth-success" role="status">{success}</div>}{error && <div className="auth-error" role="alert">{error}</div>}<button className="primary auth-submit" disabled={busy}>{busy ? 'Working…' : mode === 'login' ? 'Sign in →' : 'Create account →'}</button></form><button className="auth-switch" onClick={() => switchMode(mode === 'login' ? 'register' : 'login')}>{mode === 'login' ? 'Need an account? Create one' : 'Already have an account? Sign in'}</button></div></div></div>
 }
-
-function Sidebar({ project, route, navigate, loadGraph, onBlocked }: { project: api.ImportResponse | null; route: AppRoute; navigate: (name: Exclude<RouteName, 'landing' | 'not-found'>) => void; loadGraph: () => void; onBlocked: () => void }) { return <aside><div className="eyebrow">WORKSPACE</div><div className="workspace"><div className="repo-icon">⌁</div><div><b>{project ? project.repository_name : 'Your workspace'}</b><small>{project ? project.source.url?.replace('https://github.com/', '') || project.source.filename : 'Import a codebase to begin'}</small></div></div><nav>{[['overview', '▦', 'Overview'], ['search', '⌕', 'Code search'], ['investigate', '◈', 'Investigate issue']].map(([value, glyph, label]) => <button key={value} className={route.name === value ? 'active' : ''} aria-current={route.name === value ? 'page' : undefined} onClick={() => project || value === 'overview' ? navigate(value as Exclude<RouteName, 'landing' | 'not-found'>) : onBlocked()}>{icon(glyph)} {label}</button>)}<button className={route.name === 'architecture' ? 'active' : ''} aria-current={route.name === 'architecture' ? 'page' : undefined} onClick={() => project ? loadGraph() : onBlocked()}>{icon('⌬')} Architecture</button><button className={route.name === 'settings' ? 'active' : ''} aria-current={route.name === 'settings' ? 'page' : undefined} onClick={() => project ? navigate('settings') : onBlocked()}>{icon('⚙')} Settings</button></nav><div className="aside-foot"><div className="limit"><b>Evidence-first analysis</b><span>Results link back to source files and lines.</span></div><small>REPOPILOT AI · PHASE 3</small></div></aside> }
+function Sidebar({ project, route, navigate, loadGraph, onBlocked }: { project: api.ImportResponse | null; route: AppRoute; navigate: (name: Exclude<RouteName, 'landing' | 'not-found'>) => void; loadGraph: () => void; onBlocked: () => void }) { return <aside><div className="eyebrow">WORKSPACE</div><div className="workspace"><div className="repo-icon">⌁</div><div><b>{project ? project.repository_name : 'Your workspace'}</b><small>{project ? project.source.url?.replace('https://github.com/', '') || project.source.filename : 'Import a codebase to begin'}</small></div></div><nav>{[['overview', '▦', 'Overview'], ['search', '⌕', 'Code search'], ['investigate', '◈', 'Investigate issue']].map(([value, glyph, label]) => <button key={value} className={route.name === value || (value === 'overview' && route.name === 'landing') ? 'active' : ''} aria-current={route.name === value || (value === 'overview' && route.name === 'landing') ? 'page' : undefined} onClick={() => navigate(value as Exclude<RouteName, 'landing' | 'not-found'>)}>{icon(glyph)} {label}</button>)}<button className={route.name === 'architecture' ? 'active' : ''} aria-current={route.name === 'architecture' ? 'page' : undefined} onClick={() => project ? loadGraph() : navigate('architecture')}>{icon('⌬')} Architecture</button><button className={route.name === 'settings' ? 'active' : ''} aria-current={route.name === 'settings' ? 'page' : undefined} onClick={() => navigate('settings')}>{icon('⚙')} Settings</button></nav><div className="aside-foot"><div className="limit"><b>Evidence-first analysis</b><span>Results link back to source files and lines.</span></div><small>REPOPILOT AI · PHASE 3</small></div></aside> }
 
 function Alert({ message, clear }: { message: string; clear: () => void }) { return <div className="alert" role="alert" aria-live="assertive">{icon('!')}<div><b>Something needs attention</b><span>{message}</span></div><button onClick={clear} aria-label="Dismiss error">×</button></div> }
+
+function EmptyRouteContent({ route, url, setUrl, submitUrl, upload, loading, navigate }: { route: AppRoute; url: string; setUrl: (value: string) => void; submitUrl: () => void; upload: (event: ChangeEvent<HTMLInputElement>) => void; loading: boolean; navigate: (name: Exclude<RouteName, 'landing' | 'not-found'>) => void }) {
+  if (route.name === 'landing' || route.name === 'overview') return <><div className="topline"><div><div className="eyebrow">GET STARTED</div><h1>Bring a repository into focus.</h1><p className="subtitle">Import a codebase to unlock search, investigation, and architecture analysis.</p></div></div><LandingCopy /><ImportCard url={url} setUrl={setUrl} submitUrl={submitUrl} upload={upload} loading={loading} /></>
+  const content: Record<string, { title: string; detail: string }> = {
+    search: { title: 'Code search', detail: 'Import a repository first, then search symbols, paths, imports, and source lines.' },
+    investigate: { title: 'Investigate an issue', detail: 'Import a repository first so findings can be grounded in source evidence.' },
+    architecture: { title: 'Architecture map', detail: 'Import a repository first to generate an evidence-backed import graph.' },
+    settings: { title: 'Settings', detail: 'Account and repository controls become available after a project is selected.' },
+  }
+  const page = content[route.name] || content.search
+  return <Card className="tool empty-route"><div className="tool-symbol">{route.name === 'settings' ? '⚙' : '⌁'}</div><h2>{page.title}</h2><p>{page.detail}</p><button className="primary" onClick={() => navigate('overview')}>Import a repository</button></Card>
+}
 
 function ImportCard({ url, setUrl, submitUrl, upload, loading }: { url: string; setUrl: (value: string) => void; submitUrl: () => void; upload: (event: ChangeEvent<HTMLInputElement>) => void; loading: boolean }) { return <div className="import-grid"><div className="card import-main"><div className="card-icon">⌘</div><h2>Import from GitHub</h2><p>Paste a public repository URL. The backend validates, downloads, and analyzes a safe snapshot.</p><div className="url-row"><input aria-label="GitHub repository URL" placeholder="https://github.com/owner/repository" value={url} onChange={event => setUrl(event.target.value)} onKeyDown={event => event.key === 'Enter' && submitUrl()} /><button onClick={submitUrl} disabled={loading || !url.trim()}>{loading ? 'Analyzing…' : 'Import repository'} <span>→</span></button></div><div className="hint">{icon('i')} Public GitHub repositories only · no Git history</div></div><label className="card dropzone"><div className="upload-icon">↥</div><h2>Upload an archive</h2><p>ZIP, TAR, or TAR.GZ · securely inspected in memory</p><span className="button-secondary">Choose file</span><input type="file" accept=".zip,.tar,.tar.gz,.tgz" onChange={upload} /></label><div className="trust"><span>✦</span><b>Grounded by evidence</b><small>Imported code is never executed. Unsupported files are flagged instead of guessed.</small></div></div> }
 

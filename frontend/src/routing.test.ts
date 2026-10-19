@@ -4,6 +4,8 @@ import { pathForRoute, routeForPath } from './routing'
 describe('application routing', () => {
   it('maps supported URLs to distinct pages', () => {
     expect(routeForPath('/workspace').name).toBe('overview')
+    expect(routeForPath('/login').name).toBe('login')
+    expect(routeForPath('/register').name).toBe('register')
     expect(routeForPath('/search').name).toBe('search')
     expect(routeForPath('/investigate').name).toBe('investigate')
     expect(routeForPath('/architecture').name).toBe('architecture')

@@ -32,3 +32,5 @@ nav{display:grid;gap:4px}nav button{border:0;background:none;color:#7e8da4;text-
 
 .skip-link{position:fixed;left:12px;top:-60px;z-index:20;background:#6ee7ff;color:#07111d;padding:9px 12px;border-radius:5px;font-size:11px;font-weight:700}.skip-link:focus{top:12px}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
+
+.auth-success{border:1px solid #2d6652;background:#10251f;color:#a6e2c9;border-radius:6px;padding:10px;font-size:11px}.empty-route{max-width:760px;text-align:center;padding:34px}.empty-route .tool-symbol{margin:0 auto 14px}.empty-route h2{margin:0 0 8px}.empty-route p{margin-bottom:18px}

@@ -115,6 +115,6 @@ export const investigate = (id: string, input: InvestigationInput | string) => {
 export const graph = (id: string) => request<Graph>(`/projects/${id}/graph`)
 export const report = (id: string, input?: InvestigationInput) => request<{ markdown: string }>(`/projects/${id}/report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input || {}) })
 export const me = () => request<{ authenticated: boolean; user: AuthUser | null }>('/auth/me')
-export const register = (email: string, password: string) => request<{ user: AuthUser }>('/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
+export const register = (email: string, password: string) => request<{ registered: boolean; email: string }>('/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
 export const login = (email: string, password: string) => request<{ user: AuthUser }>('/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
 export const logout = () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' })

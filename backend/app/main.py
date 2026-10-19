@@ -358,14 +358,12 @@ def set_auth_cookies(response: Response, user_id: str) -> None:
 
 
 @app.post("/api/v1/auth/register")
-def auth_register(payload: AuthRequest, response: Response) -> dict[str, Any]:
-    email = payload.email
+def auth_register(payload: AuthRequest) -> dict[str, Any]:
     try:
-        user = create_user(email, payload.password)
+        user = create_user(payload.email, payload.password)
     except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    set_auth_cookies(response, user.id)
-    return {"user": user_response(user)}
+        raise HTTPException(409, "registration could not be completed") from exc
+    return {"registered": True, "email": user.email}
 
 
 @app.post("/api/v1/auth/login")
