@@ -34,7 +34,7 @@ npm ci
 npm run dev
 ```
 
-The backend is available at `http://127.0.0.1:8000`; the frontend is available at `http://127.0.0.1:5173`. The frontend calls `/api/v1` relative to its origin. For local two-process development, configure a development proxy if the frontend needs to call the backend across ports.
+The backend is available at `http://127.0.0.1:8000`; the frontend is available at `http://127.0.0.1:5173`. Vite proxies `/api` to the backend during development. Set `VITE_API_PROXY_TARGET` if the backend uses another address. For production, use the root Docker image so frontend and API share one origin.
 
 ## Health checks
 
@@ -71,7 +71,7 @@ cd frontend
 npm test
 ```
 
-The frontend uses `package-lock.json`; the backend pins all Python dependencies in `requirements.txt`.
+The frontend uses `package-lock.json`; the backend pins all Python dependencies in `requirements.txt`. The backend stores auth and project metadata under `REPOPILOT_DATA_DIR`; mount that directory in deployments and provide a stable `REPOPILOT_SESSION_SECRET`.
 
 ## Production Docker build
 
