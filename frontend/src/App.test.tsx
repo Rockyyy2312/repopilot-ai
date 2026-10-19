@@ -1,6 +1,6 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import * as api from './api'
 
@@ -13,6 +13,8 @@ vi.mock('./api', () => ({
 
 describe('App workspace shell', () => {
   let root: Root
+  afterEach(() => { act(() => { root?.unmount() }) })
+
   beforeEach(() => {
     document.body.innerHTML = '<div id="root"></div>'
     window.history.replaceState({}, '', '/')

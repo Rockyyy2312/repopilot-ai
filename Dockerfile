@@ -36,6 +36,7 @@ COPY --from=frontend-build /build/frontend/dist ./frontend-dist
 RUN chown -R repopilot:repopilot /app
 
 USER repopilot
+VOLUME ["/app/data"]
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "from urllib.request import urlopen; response=urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3); raise SystemExit(0 if response.status == 200 else 1)"

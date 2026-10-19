@@ -3,7 +3,7 @@ export type SymbolResult = { name: string; kind: string; location: Location }
 export type ImportResult = { module: string; location: Location }
 export type FileAnalysis = { path: string; language: string | null; size: number; symbols: SymbolResult[]; imports: ImportResult[]; status: string; limitation: string | null }
 export type Analysis = { files: FileAnalysis[]; tree: Record<string, unknown>; languages: Record<string, number>; symbols: SymbolResult[]; imports: ImportResult[]; excluded: Array<{ path: string; reason: string }>; errors: Array<{ path: string; reason: string }> }
-export type ImportResponse = { id: string; repository_name: string; source: { type: string; url?: string; filename?: string }; file_count: number; languages: Record<string, number>; symbol_count: number; import_count: number; tree: Record<string, unknown>; warnings: Array<{ path: string; reason: string }>; analysis: Analysis }
+export type ImportResponse = { id: string; index?: { symbols: unknown[]; imports: unknown[] }; repository_name: string; source: { type: string; url?: string; filename?: string }; file_count: number; languages: Record<string, number>; symbol_count: number; import_count: number; tree: Record<string, unknown>; warnings: Array<{ path: string; reason: string }>; analysis: Analysis }
 export type SearchResult = { path: string; line: number; text: string; kind: string; language: string | null }
 export type InvestigationEvidence = { path: string; line: number | null; text: string; kind: string }
 export type InvestigationSymbol = { name: string; kind: string; path: string; line: number | null }
@@ -62,7 +62,7 @@ export const normalizeInvestigation = (data: unknown): Investigation => {
     limitations: list(root.limitations ?? root.caveats),
   }
 }
-export type Graph = { nodes: Array<{ id: string; type?: string }>; edges: Array<{ from: string; to: string; evidence?: { line: number; kind: string } }> }
+export type Graph = { nodes: Array<{ id: string; type?: string }>; edges: Array<{ from: string; to: string; evidence?: { line: number; kind: string; resolved?: boolean; module?: string } }>; limitations?: string[] }
 
 const base = '/api/v1'
 export type AuthUser = { id: string; email: string }
@@ -107,7 +107,7 @@ export const deleteProject = (id: string) => request<{ ok: boolean }>(`/projects
 export const getTree = (id: string) => request<{ project_id: string; files: string[]; tree: Record<string, unknown>; excluded: Array<{ path: string; reason: string }> }>(`/projects/${id}/tree`)
 export const getFile = (id: string, path: string) => request<{ path: string; content: string }>(`/projects/${id}/files/${path.split('/').map(encodeURIComponent).join('/')}`)
 export const search = (id: string, query: string) => request<unknown>(`/projects/${id}/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, limit: 50 }) }).then(normalizeSearch)
-export type InvestigationInput = { question: string; error_message?: string; stack_trace?: string; file?: string; symbol?: string }
+export type InvestigationInput = { question?: string; error_message?: string; stack_trace?: string; file?: string; symbol?: string; query?: string }
 export const investigate = (id: string, input: InvestigationInput | string) => {
   const payload = typeof input === 'string' ? { question: input } : input
   return request<unknown>(`/projects/${id}/investigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).then(normalizeInvestigation)

@@ -26,7 +26,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.analysis import AnalysisConfig, analyze_files
 from app.analysis.engine import is_sensitive, safe_relative_path
 from app.investigation import investigate as run_investigation
-from app.project_store import delete_expired, delete_project, list_projects as stored_projects, load_project, save_project, touch_project
+from app.project_store import count_projects, delete_expired, delete_project, list_projects as stored_projects, load_project, save_project, touch_project
 from app.auth import APP_ENV, CSRF_COOKIE, SECURE_COOKIES, SESSION_COOKIE, SESSION_TTL, User, authenticate, create_session, create_user, delete_session, get_user
 
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
@@ -244,7 +244,7 @@ def reserve_import(user_id: str) -> None:
             raise HTTPException(429, "import rate limit reached; try again later")
         if IMPORT_IN_FLIGHT.get(user_id, 0) >= MAX_IMPORTS_IN_FLIGHT_PER_USER:
             raise HTTPException(429, "another import is already being processed")
-        if sum(1 for item in PROJECTS.values() if item.get("user_id") == user_id) >= MAX_PROJECTS_PER_USER:
+        if count_projects(user_id) >= MAX_PROJECTS_PER_USER:
             raise HTTPException(429, "project quota reached; remove an existing project before importing another")
         timestamps.append(now)
         IMPORT_TIMES[user_id] = timestamps
@@ -274,8 +274,7 @@ def create_project(files: dict[str, str], source: dict[str, Any], user_id: str =
         "created_at": time.time(),
         "accessed_at": time.time(),
     }
-    owned_projects = [item for item in PROJECTS.values() if item.get("user_id") == user_id]
-    if len(owned_projects) >= MAX_PROJECTS_PER_USER:
+    if count_projects(user_id) >= MAX_PROJECTS_PER_USER:
         raise HTTPException(429, "project quota reached; remove an existing project before importing another")
     save_project(project)
     PROJECTS[project_id] = project

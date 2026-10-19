@@ -356,3 +356,12 @@ def test_github_fetch_resolves_default_branch_without_following_redirects(monkey
     data = main_module.fetch_github_archive("owner", "repo")
     assert data.startswith(b"PK")
     assert calls == ["https://api.github.com/repos/owner/repo", "https://codeload.github.com/owner/repo/zip/refs/heads/main"]
+
+
+def test_project_quota_counts_persisted_projects_after_cache_restart(monkeypatch):
+    monkeypatch.setattr(main_module, "MAX_PROJECTS_PER_USER", 1)
+    project_id = import_zip()
+    assert project_id
+    PROJECTS.clear()
+    response = client.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
+    assert response.status_code == 429

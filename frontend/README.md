@@ -16,7 +16,7 @@ npm ci
 npm run dev
 ```
 
-Vite serves the UI at `http://localhost:5173`. The API is expected at the same origin under `/api/v1` (configure a reverse proxy when developing against a separate backend).
+Vite serves the UI at `http://localhost:5173`. The API is available under `/api/v1`; Vite proxies it to `http://127.0.0.1:8000` during local development. Set `VITE_API_PROXY_TARGET` for another backend address. Use the root Dockerfile for the complete frontend/backend deployment.
 
 ## Test and build
 

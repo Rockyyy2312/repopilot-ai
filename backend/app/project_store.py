@@ -48,6 +48,12 @@ def delete_project(project_id: str, user_id: str) -> bool:
         cursor = connection.execute("DELETE FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id))
     return cursor.rowcount > 0
 
+def count_projects(user_id: str) -> int:
+    with connect() as connection:
+        row = connection.execute("SELECT COUNT(*) AS count FROM projects WHERE user_id = ?", (user_id,)).fetchone()
+    return int(row["count"])
+
+
 def list_projects(user_id: str) -> list[dict[str, Any]]:
     with connect() as connection:
         rows = connection.execute("SELECT id, source_json, created_at, accessed_at FROM projects WHERE user_id = ? ORDER BY accessed_at DESC", (user_id,)).fetchall()

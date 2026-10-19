@@ -57,6 +57,14 @@ This type-checks and produces the static Vite bundle. Opening the dev URL and se
 
 ## Tests
 
+From the repository root, run the complete offline-after-install test command:
+
+```sh
+make test
+```
+
+Individual suites:
+
 Run backend tests:
 
 ```sh
@@ -75,7 +83,7 @@ The frontend uses `package-lock.json`; the backend pins all Python dependencies 
 
 ## Production Docker build
 
-The root `Dockerfile` is the production deployment path. It uses Node `22.12.0` to install the locked frontend dependencies and build the Vite bundle, then Python `3.11` to run FastAPI as the non-root `repopilot` user. The final image contains no `.env` files, Git metadata, Node toolchain, or imported repositories.
+The root `Dockerfile` is the production deployment path. Mount `/app/data` as a persistent volume and provide a stable `REPOPILOT_SESSION_SECRET`; production cookies require HTTPS. It uses Node `22.12.0` to install the locked frontend dependencies and build the Vite bundle, then Python `3.11` to run FastAPI as the non-root `repopilot` user. The final image contains no `.env` files, Git metadata, Node toolchain, or imported repositories.
 
 Build and run:
 
