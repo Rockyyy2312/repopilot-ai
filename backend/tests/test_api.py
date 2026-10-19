@@ -308,3 +308,16 @@ def test_import_rate_limit_is_enforced_before_processing(monkeypatch):
     monkeypatch.setattr(main_module, "MAX_IMPORTS_PER_MINUTE", 0)
     response = client.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
     assert response.status_code == 429
+
+
+def test_project_survives_memory_cache_clear_and_can_be_deleted():
+    project_id = import_zip()
+    PROJECTS.clear()
+    restored = client.get(f"/api/v1/projects/{project_id}")
+    assert restored.status_code == 200
+    assert restored.json()["id"] == project_id
+    listed = client.get("/api/v1/projects").json()["projects"]
+    assert any(item["id"] == project_id for item in listed)
+    deleted = client.delete(f"/api/v1/projects/{project_id}")
+    assert deleted.status_code == 200
+    assert client.get(f"/api/v1/projects/{project_id}").status_code == 404

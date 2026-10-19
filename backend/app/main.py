@@ -24,6 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.analysis import AnalysisConfig, analyze_files
 from app.analysis.engine import is_sensitive, safe_relative_path
 from app.investigation import investigate as run_investigation
+from app.project_store import delete_expired, delete_project, list_projects as stored_projects, load_project, save_project, touch_project
 from app.auth import APP_ENV, CSRF_COOKIE, SECURE_COOKIES, SESSION_COOKIE, SESSION_TTL, User, authenticate, create_session, create_user, delete_session, get_user
 
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
@@ -260,6 +261,7 @@ def create_project(files: dict[str, str], source: dict[str, Any], user_id: str =
     owned_projects = [item for item in PROJECTS.values() if item.get("user_id") == user_id]
     if len(owned_projects) >= MAX_PROJECTS_PER_USER:
         raise HTTPException(429, "project quota reached; remove an existing project before importing another")
+    save_project(project)
     PROJECTS[project_id] = project
     while len(PROJECTS) > MAX_PROJECTS:
         oldest = min(PROJECTS, key=lambda item: PROJECTS[item].get("accessed_at", 0))
@@ -272,6 +274,7 @@ def cleanup_projects() -> None:
     for project_id, project in list(PROJECTS.items()):
         if project.get("accessed_at", project.get("created_at", 0)) < cutoff:
             del PROJECTS[project_id]
+    delete_expired(cutoff)
 
 
 def import_response(project: dict[str, Any]) -> dict[str, Any]:
@@ -303,10 +306,19 @@ def get_project(project_id: str, user: User) -> dict[str, Any]:
     cleanup_projects()
     project = PROJECTS.get(project_id)
     if not project:
+        stored = load_project(project_id)
+        if stored:
+            result = analyze_files(stored["files"], ANALYSIS_CONFIG)
+            stored["analysis"] = result
+            stored["index"] = {"symbols": [symbol_to_dict(item) for item in result.symbols], "imports": [import_to_dict(item) for item in result.imports]}
+            PROJECTS[project_id] = stored
+            project = stored
+    if not project:
         raise HTTPException(404, "project not found")
     if project.get("user_id") != user.id:
         raise HTTPException(404, "project not found")
     project["accessed_at"] = time.time()
+    touch_project(project_id, project["accessed_at"])
     return project
 
 
@@ -381,6 +393,29 @@ async def import_archive(file: UploadFile = File(...), user: User = Depends(curr
     finally:
         await file.close()
         release_import(user.id)
+
+
+@app.get("/api/v1/projects")
+def project_list(user: User = Depends(current_user)) -> dict[str, Any]:
+    items = []
+    for item in stored_projects(user.id):
+        project = get_project(item["id"], user)
+        items.append(import_response(project))
+    return {"projects": items}
+
+
+@app.get("/api/v1/projects/{project_id}")
+def project_detail(project_id: str, user: User = Depends(current_user)) -> dict[str, Any]:
+    return import_response(get_project(project_id, user))
+
+
+@app.delete("/api/v1/projects/{project_id}")
+def project_delete(project_id: str, user: User = Depends(current_user)) -> dict[str, bool]:
+    project = get_project(project_id, user)
+    PROJECTS.pop(project_id, None)
+    if not delete_project(project_id, user.id):
+        raise HTTPException(404, "project not found")
+    return {"ok": True}
 
 
 @app.get("/api/v1/projects/{project_id}/tree")

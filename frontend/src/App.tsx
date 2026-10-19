@@ -38,13 +38,20 @@ function App() {
   const clearSessionCache = () => { sessionStorage.removeItem('repopilot.project') }
 
   useEffect(() => {
-    void api.me().then(result => {
+    void api.me().then(async result => {
       setAuthUnavailable(false)
       setUser(result.user)
       clearSessionCache()
-      if (!result.authenticated) {
-        setProject(null)
-        sessionStorage.removeItem('repopilot.project')
+      if (!result.authenticated || !result.user) {
+        clearWorkspace()
+        return
+      }
+      const savedId = localStorage.getItem(`repopilot.last_project.${result.user.id}`)
+      const projects = (await api.listProjects()).projects
+      const restored = projects.find(item => item.id === savedId)
+      if (restored) {
+        setProject(restored)
+        setTree(restored.analysis.files.map(file => file.path))
       }
     }).catch(() => {
       setUser(null)
@@ -90,6 +97,7 @@ function App() {
     const response = await api.getTree(imported.id)
     setProject(imported)
     setTree(response.files)
+    if (user) localStorage.setItem(`repopilot.last_project.${user.id}`, imported.id)
     navigate('overview', true)
     setSelected('')
     setContent('')
