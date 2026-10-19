@@ -6,12 +6,19 @@ import os
 import secrets
 import sqlite3
 import time
+from pathlib import Path
 from dataclasses import dataclass
 
-DB_PATH = os.environ.get("REPOPILOT_AUTH_DB", "/tmp/repopilot-auth.sqlite3")
+DATA_DIR = os.environ.get("REPOPILOT_DATA_DIR", "./data")
+DB_PATH = os.environ.get("REPOPILOT_AUTH_DB", os.path.join(DATA_DIR, "repopilot-auth.sqlite3"))
+Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 SESSION_TTL = 60 * 60 * 24 * 7
 SESSION_COOKIE = "repopilot_session"
-SESSION_SECRET = os.environ.get("REPOPILOT_SESSION_SECRET") or secrets.token_hex(32)
+SESSION_SECRET = os.environ.get("REPOPILOT_SESSION_SECRET")
+if not SESSION_SECRET:
+    if os.environ.get("REPOPILOT_ENV", "development").lower() == "production":
+        raise RuntimeError("REPOPILOT_SESSION_SECRET is required in production")
+    SESSION_SECRET = secrets.token_hex(32)
 
 
 @dataclass(frozen=True)

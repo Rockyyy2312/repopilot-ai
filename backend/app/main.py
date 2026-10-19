@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -30,13 +30,29 @@ MAX_ARCHIVE_MEMBERS = MAX_FILES * 2
 MAX_SEARCH_RESULTS = 100
 GITHUB_DOWNLOAD_TIMEOUT = 15
 PROJECT_RETENTION_SECONDS = 60 * 60
-MAX_PROJECTS = 20
+MAX_PROJECTS = 100
+MAX_PROJECTS_PER_USER = 10
+ALLOWED_ORIGINS = {item.strip() for item in os.environ.get("REPOPILOT_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if item.strip()}
 ANALYSIS_CONFIG = AnalysisConfig(
     max_files=int(os.environ.get("REPOPILOT_MAX_FILES", MAX_FILES)),
     max_file_bytes=int(os.environ.get("REPOPILOT_MAX_FILE_BYTES", MAX_FILE_BYTES)),
 )
 
 app = FastAPI(title="RepoPilot AI", version="0.1.0")
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        origin = request.headers.get("origin")
+        if origin and origin not in ALLOWED_ORIGINS:
+            return Response("origin not allowed", status_code=403)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'")
+    return response
+
 PROJECTS: dict[str, dict[str, Any]] = {}
 
 
@@ -182,6 +198,9 @@ def create_project(files: dict[str, str], source: dict[str, Any], user_id: str =
         "created_at": time.time(),
         "accessed_at": time.time(),
     }
+    owned_projects = [item for item in PROJECTS.values() if item.get("user_id") == user_id]
+    if len(owned_projects) >= MAX_PROJECTS_PER_USER:
+        raise HTTPException(429, "project quota reached; remove an existing project before importing another")
     PROJECTS[project_id] = project
     while len(PROJECTS) > MAX_PROJECTS:
         oldest = min(PROJECTS, key=lambda item: PROJECTS[item].get("accessed_at", 0))
@@ -254,7 +273,7 @@ def auth_register(payload: AuthRequest, response: Response) -> dict[str, Any]:
         user = create_user(email, payload.password)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    response.set_cookie(SESSION_COOKIE, create_session(user.id), httponly=True, samesite="lax", max_age=SESSION_TTL, secure=False)
+    response.set_cookie(SESSION_COOKIE, create_session(user.id), httponly=True, samesite="lax", max_age=SESSION_TTL, secure=os.environ.get("REPOPILOT_SECURE_COOKIES", "false").lower() == "true")
     return {"user": user_response(user)}
 
 
@@ -263,7 +282,7 @@ def auth_login(payload: AuthRequest, response: Response) -> dict[str, Any]:
     user = authenticate(payload.email.strip().casefold(), payload.password)
     if not user:
         raise HTTPException(401, "invalid email or password")
-    response.set_cookie(SESSION_COOKIE, create_session(user.id), httponly=True, samesite="lax", max_age=SESSION_TTL, secure=False)
+    response.set_cookie(SESSION_COOKIE, create_session(user.id), httponly=True, samesite="lax", max_age=SESSION_TTL, secure=os.environ.get("REPOPILOT_SECURE_COOKIES", "false").lower() == "true")
     return {"user": user_response(user)}
 
 

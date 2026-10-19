@@ -260,3 +260,16 @@ def test_search_excludes_sensitive_files_and_reports_no_results():
     result = client.post(f"/api/v1/projects/{project_id}/search", json={"query": "secret"}).json()
 
     assert result["results"] == []
+
+
+def test_unsafe_origin_is_rejected_for_state_changing_requests():
+    response = client.post("/api/v1/auth/logout", headers={"Origin": "https://evil.example"})
+    assert response.status_code == 403
+
+
+def test_project_quota_is_per_user(monkeypatch):
+    monkeypatch.setattr(main_module, "MAX_PROJECTS_PER_USER", 1)
+    project_id = import_zip()
+    assert project_id
+    limited = client.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
+    assert limited.status_code == 429
