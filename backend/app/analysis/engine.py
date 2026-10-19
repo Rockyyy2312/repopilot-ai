@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable
@@ -13,6 +14,12 @@ from .parsers import parse_file
 DEFAULT_EXCLUDED_DIRS = frozenset({".git", "node_modules", ".venv", "venv", "env", "__pycache__", "dist", "build", ".cache", ".pytest_cache", ".mypy_cache", ".tox", "coverage", "target", "vendor"})
 SENSITIVE_NAMES = frozenset({".env", ".env.local", ".env.production", ".env.development", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials", "credentials.json", "secrets.json"})
 SENSITIVE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks")
+SECRET_CONTENT_PATTERNS = (
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    re.compile(r"(?:ghp|github_pat)_[A-Za-z0-9_]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"(?i)\b(?:api[_-]?key|secret|access[_-]?token|client[_-]?secret)\s*[:=]\s*[\"'][^\"']{12,}[\"']"),
+)
 
 
 @dataclass(frozen=True)
@@ -38,7 +45,11 @@ def safe_relative_path(path: str) -> str:
 
 def is_sensitive(path: str) -> bool:
     name = PurePosixPath(path).name.casefold()
-    return name in SENSITIVE_NAMES or name.startswith(".env") or name.endswith(SENSITIVE_SUFFIXES)
+    return name in SENSITIVE_NAMES or name.startswith(".env") or name in {".npmrc", ".pypirc", "config.json", "credentials.json"} or name.endswith(SENSITIVE_SUFFIXES)
+
+
+def contains_sensitive_content(content: str) -> bool:
+    return any(pattern.search(content) for pattern in SECRET_CONTENT_PATTERNS)
 
 
 def _reason(path: str, config: AnalysisConfig) -> str | None:
@@ -112,6 +123,9 @@ def analyze_files(files: dict[str, str], config: AnalysisConfig | None = None, e
             errors.append({"path": path, "reason": reason})
             continue
         content = files[raw_path]
+        if contains_sensitive_content(content):
+            errors.append({"path": path, "reason": "possible secret content"})
+            continue
         size = len(content.encode("utf-8", errors="replace"))
         if size > config.max_file_bytes:
             errors.append({"path": path, "reason": "file exceeds configured size limit"})

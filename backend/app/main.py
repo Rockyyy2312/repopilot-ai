@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import io
+import hmac
+import secrets
 import os
+import threading
 import re
 import tarfile
 import time
@@ -13,14 +16,15 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.analysis import AnalysisConfig, analyze_files
 from app.analysis.engine import is_sensitive, safe_relative_path
 from app.investigation import investigate as run_investigation
-from app.auth import SESSION_COOKIE, SESSION_TTL, User, authenticate, create_session, create_user, delete_session, get_user
+from app.auth import APP_ENV, CSRF_COOKIE, SECURE_COOKIES, SESSION_COOKIE, SESSION_TTL, User, authenticate, create_session, create_user, delete_session, get_user
 
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 MAX_FILES = 5000
@@ -32,6 +36,9 @@ GITHUB_DOWNLOAD_TIMEOUT = 15
 PROJECT_RETENTION_SECONDS = 60 * 60
 MAX_PROJECTS = 100
 MAX_PROJECTS_PER_USER = 10
+MAX_IMPORTS_PER_MINUTE = 6
+MAX_IMPORTS_IN_FLIGHT_PER_USER = 1
+MAX_REQUEST_BYTES = 30 * 1024 * 1024
 ALLOWED_ORIGINS = {item.strip() for item in os.environ.get("REPOPILOT_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if item.strip()}
 ANALYSIS_CONFIG = AnalysisConfig(
     max_files=int(os.environ.get("REPOPILOT_MAX_FILES", MAX_FILES)),
@@ -42,18 +49,37 @@ app = FastAPI(title="RepoPilot AI", version="0.1.0")
 
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
-    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+    content_length = request.headers.get("content-length")
+    if content_length and request.url.path.endswith("/projects/import/archive"):
+        try:
+            if int(content_length) > MAX_REQUEST_BYTES:
+                return JSONResponse({"detail": "request body exceeds import limit"}, status_code=413)
+        except ValueError:
+            return JSONResponse({"detail": "invalid content length"}, status_code=400)
+    unsafe = request.method not in {"GET", "HEAD", "OPTIONS"}
+    if unsafe:
         origin = request.headers.get("origin")
         if origin and origin not in ALLOWED_ORIGINS:
-            return Response("origin not allowed", status_code=403)
+            return JSONResponse({"detail": "origin not allowed"}, status_code=403)
+        exempt = {"/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/health"}
+        if request.url.path not in exempt and request.cookies.get(SESSION_COOKIE):
+            cookie_token = request.cookies.get(CSRF_COOKIE)
+            header_token = request.headers.get("x-csrf-token")
+            if not cookie_token or not header_token or not hmac.compare_digest(cookie_token, header_token):
+                return JSONResponse({"detail": "csrf validation failed"}, status_code=403)
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'")
+    if APP_ENV == "production":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
 
 PROJECTS: dict[str, dict[str, Any]] = {}
+IMPORT_STATE_LOCK = threading.Lock()
+IMPORT_TIMES: dict[str, list[float]] = {}
+IMPORT_IN_FLIGHT: dict[str, int] = {}
 
 
 class GithubImport(BaseModel):
@@ -63,6 +89,14 @@ class GithubImport(BaseModel):
 class AuthRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=10, max_length=200)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", normalized):
+            raise ValueError("a valid email address is required")
+        return normalized
 
 
 class SearchRequest(BaseModel):
@@ -184,6 +218,31 @@ def import_to_dict(relation: Any) -> dict[str, Any]:
     return {"module": relation.module, "path": relation.location.path, "line": relation.location.line}
 
 
+
+def reserve_import(user_id: str) -> None:
+    now = time.time()
+    with IMPORT_STATE_LOCK:
+        timestamps = [item for item in IMPORT_TIMES.get(user_id, []) if now - item < 60]
+        if len(timestamps) >= MAX_IMPORTS_PER_MINUTE:
+            raise HTTPException(429, "import rate limit reached; try again later")
+        if IMPORT_IN_FLIGHT.get(user_id, 0) >= MAX_IMPORTS_IN_FLIGHT_PER_USER:
+            raise HTTPException(429, "another import is already being processed")
+        if sum(1 for item in PROJECTS.values() if item.get("user_id") == user_id) >= MAX_PROJECTS_PER_USER:
+            raise HTTPException(429, "project quota reached; remove an existing project before importing another")
+        timestamps.append(now)
+        IMPORT_TIMES[user_id] = timestamps
+        IMPORT_IN_FLIGHT[user_id] = IMPORT_IN_FLIGHT.get(user_id, 0) + 1
+
+
+def release_import(user_id: str) -> None:
+    with IMPORT_STATE_LOCK:
+        remaining = IMPORT_IN_FLIGHT.get(user_id, 0) - 1
+        if remaining > 0:
+            IMPORT_IN_FLIGHT[user_id] = remaining
+        else:
+            IMPORT_IN_FLIGHT.pop(user_id, None)
+
+
 def create_project(files: dict[str, str], source: dict[str, Any], user_id: str = "anonymous") -> dict[str, Any]:
     cleanup_projects()
     project_id = uuid.uuid4().hex
@@ -266,47 +325,62 @@ def auth_me(session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) ->
     return {"authenticated": bool(user), "user": user_response(user) if user else None}
 
 
+def set_auth_cookies(response: Response, user_id: str) -> None:
+    response.set_cookie(SESSION_COOKIE, create_session(user_id), httponly=True, samesite="lax", max_age=SESSION_TTL, secure=SECURE_COOKIES)
+    response.set_cookie(CSRF_COOKIE, secrets.token_urlsafe(32), httponly=False, samesite="lax", max_age=SESSION_TTL, secure=SECURE_COOKIES)
+
+
 @app.post("/api/v1/auth/register")
 def auth_register(payload: AuthRequest, response: Response) -> dict[str, Any]:
-    email = payload.email.strip().casefold()
+    email = payload.email
     try:
         user = create_user(email, payload.password)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    response.set_cookie(SESSION_COOKIE, create_session(user.id), httponly=True, samesite="lax", max_age=SESSION_TTL, secure=os.environ.get("REPOPILOT_SECURE_COOKIES", "false").lower() == "true")
+    set_auth_cookies(response, user.id)
     return {"user": user_response(user)}
 
 
 @app.post("/api/v1/auth/login")
 def auth_login(payload: AuthRequest, response: Response) -> dict[str, Any]:
-    user = authenticate(payload.email.strip().casefold(), payload.password)
+    user = authenticate(payload.email, payload.password)
     if not user:
         raise HTTPException(401, "invalid email or password")
-    response.set_cookie(SESSION_COOKIE, create_session(user.id), httponly=True, samesite="lax", max_age=SESSION_TTL, secure=os.environ.get("REPOPILOT_SECURE_COOKIES", "false").lower() == "true")
+    set_auth_cookies(response, user.id)
     return {"user": user_response(user)}
 
 
 @app.post("/api/v1/auth/logout")
 def auth_logout(response: Response, session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> dict[str, bool]:
     delete_session(session)
-    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(SESSION_COOKIE, secure=SECURE_COOKIES, samesite="lax")
+    response.delete_cookie(CSRF_COOKIE, secure=SECURE_COOKIES, samesite="lax")
     return {"ok": True}
 
 
 @app.post("/api/v1/projects/import/github")
 def import_github(payload: GithubImport, user: User = Depends(current_user)) -> dict[str, Any]:
-    owner, repo = validate_github_url(payload.url)
-    data = fetch_github_archive(owner, repo)
-    files = extract_archive(data, f"{repo}.zip")
-    project = create_project(files, {"type": "github", "url": payload.url, "owner": owner, "repo": repo}, user.id)
-    return import_response(project)
+    reserve_import(user.id)
+    try:
+        owner, repo = validate_github_url(payload.url)
+        data = fetch_github_archive(owner, repo)
+        files = extract_archive(data, f"{repo}.zip")
+        project = create_project(files, {"type": "github", "url": payload.url, "owner": owner, "repo": repo}, user.id)
+        return import_response(project)
+    finally:
+        release_import(user.id)
 
 
 @app.post("/api/v1/projects/import/archive")
 async def import_archive(file: UploadFile = File(...), user: User = Depends(current_user)) -> dict[str, Any]:
-    data = await file.read(MAX_ARCHIVE_BYTES + 1)
-    project = create_project(extract_archive(data, file.filename or ""), {"type": "archive", "filename": file.filename}, user.id)
-    return import_response(project)
+    reserve_import(user.id)
+    try:
+        data = await file.read(MAX_ARCHIVE_BYTES + 1)
+        project = create_project(extract_archive(data, file.filename or ""), {"type": "archive", "filename": file.filename}, user.id)
+        return import_response(project)
+    finally:
+        await file.close()
+        release_import(user.id)
 
 
 @app.get("/api/v1/projects/{project_id}/tree")

@@ -21,7 +21,11 @@ FROM python:3.11-slim-bookworm AS runtime
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    FRONTEND_DIST_DIR=/app/frontend-dist
+    REPOPILOT_ENV=production \
+    REPOPILOT_SECURE_COOKIES=true \
+    FRONTEND_DIST_DIR=/app/frontend-dist \
+    REPOPILOT_DATA_DIR=/app/data \
+    REPOPILOT_AUTH_DB=/app/data/repopilot-auth.sqlite3
 
 RUN addgroup --system --gid 10001 repopilot \
     && adduser --system --uid 10001 --ingroup repopilot --home /nonexistent --no-create-home repopilot

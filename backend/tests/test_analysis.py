@@ -90,3 +90,9 @@ def test_analysis_config_rejects_invalid_limits():
         AnalysisConfig(max_files=0)
     with pytest.raises(ValueError):
         AnalysisConfig(max_file_bytes=0)
+
+
+def test_analysis_excludes_likely_secret_content():
+    result = analyze_files({"config.py": "API_KEY = '12345678901234567890'\n", "safe.py": "value = 1\n"})
+    assert [item.path for item in result.files] == ["safe.py"]
+    assert result.errors == [{"path": "config.py", "reason": "possible secret content"}]

@@ -6,10 +6,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main as main_module
-from app.auth import reset_db
+from app.auth import CSRF_COOKIE, reset_db
 from app.main import MAX_ARCHIVE_BYTES, PROJECTS, app, cleanup_projects
 
-client = TestClient(app)
+class BrowserTestClient(TestClient):
+    def request(self, method, url, **kwargs):
+        headers = dict(kwargs.pop("headers", {}) or {})
+        if method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+            token = self.cookies.get(CSRF_COOKIE)
+            if token:
+                headers.setdefault("X-CSRF-Token", token)
+        return super().request(method, url, headers=headers, **kwargs)
+
+
+client = BrowserTestClient(app)
 
 
 def setup_function():
@@ -99,7 +109,7 @@ def test_analysis_endpoint_returns_tree_languages_and_limitations():
 def test_auth_requires_login_and_logout_revokes_project_access():
     PROJECTS.clear()
     reset_db()
-    fresh = TestClient(app)
+    fresh = BrowserTestClient(app)
     denied = fresh.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
     assert denied.status_code == 401
     assert fresh.post("/api/v1/auth/register", json={"email": "owner@example.com", "password": "correct horse battery"}).status_code == 200
@@ -111,8 +121,8 @@ def test_auth_requires_login_and_logout_revokes_project_access():
 def test_users_cannot_access_each_others_projects():
     PROJECTS.clear()
     reset_db()
-    first = TestClient(app)
-    second = TestClient(app)
+    first = BrowserTestClient(app)
+    second = BrowserTestClient(app)
     assert first.post("/api/v1/auth/register", json={"email": "one@example.com", "password": "correct horse battery"}).status_code == 200
     project_id = first.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")}).json()["id"]
     assert second.post("/api/v1/auth/register", json={"email": "two@example.com", "password": "correct horse battery"}).status_code == 200
@@ -273,3 +283,28 @@ def test_project_quota_is_per_user(monkeypatch):
     assert project_id
     limited = client.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
     assert limited.status_code == 429
+
+
+def test_cookie_authenticated_mutation_requires_csrf_token():
+    plain = TestClient(app)
+    plain.post("/api/v1/auth/register", json={"email": "csrf@example.com", "password": "correct horse battery"})
+    response = plain.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "csrf validation failed"
+
+
+def test_auth_rejects_invalid_normalized_email():
+    response = TestClient(app).post("/api/v1/auth/register", json={"email": "   ", "password": "correct horse battery"})
+    assert response.status_code == 422
+
+
+def test_archive_import_rejects_request_body_limit(monkeypatch):
+    monkeypatch.setattr(main_module, "MAX_REQUEST_BYTES", 10)
+    response = client.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", b"1234567890", "application/zip")})
+    assert response.status_code == 413
+
+
+def test_import_rate_limit_is_enforced_before_processing(monkeypatch):
+    monkeypatch.setattr(main_module, "MAX_IMPORTS_PER_MINUTE", 0)
+    response = client.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
+    assert response.status_code == 429

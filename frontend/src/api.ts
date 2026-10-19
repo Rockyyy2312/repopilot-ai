@@ -67,8 +67,19 @@ export type Graph = { nodes: Array<{ id: string; type?: string }>; edges: Array<
 const base = '/api/v1'
 export type AuthUser = { id: string; email: string }
 
+function csrfToken(): string | undefined {
+  const entry = document.cookie.split('; ').find(value => value.startsWith('repopilot_csrf='))
+  return entry ? decodeURIComponent(entry.slice('repopilot_csrf='.length)) : undefined
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(base + url, { credentials: 'include', ...init })
+  const method = (init?.method || 'GET').toUpperCase()
+  const headers = new Headers(init?.headers)
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    const token = csrfToken()
+    if (token) headers.set('X-CSRF-Token', token)
+  }
+  const response = await fetch(base + url, { credentials: 'include', ...init, headers })
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { detail?: string } | null
     const error = new Error(body?.detail || `Request failed (${response.status})`)

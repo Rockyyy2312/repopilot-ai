@@ -14,10 +14,13 @@ DB_PATH = os.environ.get("REPOPILOT_AUTH_DB", os.path.join(DATA_DIR, "repopilot-
 Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 SESSION_TTL = 60 * 60 * 24 * 7
 SESSION_COOKIE = "repopilot_session"
+CSRF_COOKIE = "repopilot_csrf"
+APP_ENV = os.environ.get("REPOPILOT_ENV", "development").lower()
+SECURE_COOKIES = os.environ.get("REPOPILOT_SECURE_COOKIES", "false").lower() == "true"
 SESSION_SECRET = os.environ.get("REPOPILOT_SESSION_SECRET")
+if APP_ENV == "production" and (not SESSION_SECRET or not SECURE_COOKIES):
+    raise RuntimeError("production requires REPOPILOT_SESSION_SECRET and REPOPILOT_SECURE_COOKIES=true")
 if not SESSION_SECRET:
-    if os.environ.get("REPOPILOT_ENV", "development").lower() == "production":
-        raise RuntimeError("REPOPILOT_SESSION_SECRET is required in production")
     SESSION_SECRET = secrets.token_hex(32)
 
 
