@@ -78,7 +78,8 @@ def test_graph_contains_import_evidence():
     project_id = import_zip()
     graph = client.get(f"/api/v1/projects/{project_id}/graph").json()
     edge = next(edge for edge in graph["edges"] if edge["from"] == "repo/main.py")
-    assert edge["to"] == "util"
+    assert edge["to"] == "repo/util.py"
+    assert edge["evidence"]["resolved"] is True
     assert edge["evidence"]["line"] == 1
 
 
@@ -90,8 +91,9 @@ def test_graph_contains_only_direct_import_relationships():
     assert {node["id"] for node in graph["nodes"]} == {"src/a.py", "src/helpers.py"}
     assert len(graph["edges"]) == 1
     assert graph["edges"][0]["from"] == "src/a.py"
-    assert graph["edges"][0]["to"] == "helpers"
-    assert graph["edges"][0]["evidence"] == {"line": 1, "kind": "import"}
+    assert graph["edges"][0]["to"] == "src/helpers.py"
+    assert graph["edges"][0]["evidence"]["resolved"] is True
+    assert graph["edges"][0]["evidence"] == {"line": 1, "kind": "import", "resolved": True, "module": "helpers"}
 
 
 def test_analysis_endpoint_returns_tree_languages_and_limitations():
@@ -321,3 +323,36 @@ def test_project_survives_memory_cache_clear_and_can_be_deleted():
     deleted = client.delete(f"/api/v1/projects/{project_id}")
     assert deleted.status_code == 200
     assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
+
+
+def test_report_contains_investigation_evidence_and_limitations():
+    project_id = import_zip(files={"app.py": "from missing import Client\n"})
+    response = client.post(f"/api/v1/projects/{project_id}/report", json={"question": "Why does startup fail?", "error_message": "ModuleNotFoundError: No module named 'missing'"})
+    assert response.status_code == 200
+    markdown = response.json()["markdown"]
+    assert "## Confirmed evidence" in markdown
+    assert "## Hypotheses" in markdown
+    assert "repository code was not executed" in markdown
+
+
+def test_github_fetch_resolves_default_branch_without_following_redirects(monkeypatch):
+    class FakeResponse:
+        def __init__(self, body, headers=None):
+            self.body = body
+            self.headers = headers or {}
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def read(self, limit=-1): return self.body[:limit]
+
+    calls = []
+    class FakeOpener:
+        def open(self, request, timeout):
+            calls.append(request.full_url)
+            if "api.github.com" in request.full_url:
+                return FakeResponse(b'{"default_branch":"main"}')
+            return FakeResponse(archive())
+
+    monkeypatch.setattr(main_module.urllib.request, "build_opener", lambda handler: FakeOpener())
+    data = main_module.fetch_github_archive("owner", "repo")
+    assert data.startswith(b"PK")
+    assert calls == ["https://api.github.com/repos/owner/repo", "https://codeload.github.com/owner/repo/zip/refs/heads/main"]

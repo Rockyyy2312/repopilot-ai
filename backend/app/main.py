@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import hmac
+import json
 import secrets
 import os
 import threading
@@ -10,6 +11,7 @@ import tarfile
 import time
 import uuid
 import urllib.request
+import urllib.parse
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -116,10 +118,24 @@ class InvestigationRequest(BaseModel):
 
 
 def fetch_github_archive(owner: str, repo: str) -> bytes:
-    archive_url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/HEAD"
-    request = urllib.request.Request(archive_url, headers={"User-Agent": "RepoPilot-AI/0.1"})
+    metadata_request = urllib.request.Request(
+        f"https://api.github.com/repos/{owner}/{repo}",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "RepoPilot-AI/0.1"},
+    )
     try:
         opener = urllib.request.build_opener(_NoRedirectHandler())
+        with opener.open(metadata_request, timeout=GITHUB_DOWNLOAD_TIMEOUT) as response:
+            metadata = json.loads(response.read(128 * 1024).decode("utf-8"))
+        branch = metadata.get("default_branch")
+        if not isinstance(branch, str) or not re.fullmatch(r"[^\x00-\x1f]{1,250}", branch):
+            raise HTTPException(502, "GitHub did not return a usable default branch")
+        archive_url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{urllib.parse.quote(branch, safe='')}"
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, "unable to resolve the public GitHub repository") from exc
+    request = urllib.request.Request(archive_url, headers={"User-Agent": "RepoPilot-AI/0.1"})
+    try:
         with opener.open(request, timeout=GITHUB_DOWNLOAD_TIMEOUT) as response:
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > MAX_ARCHIVE_BYTES:
@@ -499,18 +515,57 @@ def investigate(project_id: str, request: InvestigationRequest, user: User = Dep
     return report
 
 
+def resolve_import(source_path: str, module: str, known_paths: set[str]) -> str | None:
+    candidates: list[str] = []
+    if module.startswith("."):
+        base = Path(source_path).parent / module
+        candidates.extend([base.as_posix(), f"{base.as_posix()}.py", f"{base.as_posix()}.js", f"{base.as_posix()}.ts", f"{base.as_posix()}/__init__.py"])
+    elif "." in module or module.replace("_", "").isalnum():
+        stem = module.replace(".", "/")
+        parent = Path(source_path).parent
+        candidates.extend([(parent / f"{stem}.py").as_posix(), (parent / f"{stem}.js").as_posix(), (parent / f"{stem}.ts").as_posix(), f"{stem}.py", f"{stem}.js", f"{stem}.ts", f"{stem}/__init__.py"])
+    return next((candidate for candidate in candidates if candidate in known_paths), None)
+
+
 @app.get("/api/v1/projects/{project_id}/graph")
 def graph(project_id: str, user: User = Depends(current_user)) -> dict[str, Any]:
     project = get_project(project_id, user)
-    nodes = [{"id": path, "type": "file"} for path in sorted(project["files"])]
-    edges = [{"from": item["path"], "to": item["module"], "evidence": {"line": int(item["line"]), "kind": "import"}} for item in project["index"]["imports"]]
-    return {"nodes": nodes, "edges": edges}
+    known_paths = set(project["files"])
+    nodes = [{"id": path, "type": "file"} for path in sorted(known_paths)]
+    edges = []
+    for item in project["index"]["imports"]:
+        resolved = resolve_import(item["path"], item["module"], known_paths)
+        target = resolved or item["module"]
+        if not resolved and not any(node["id"] == target for node in nodes):
+            nodes.append({"id": target, "type": "external"})
+        edges.append({"from": item["path"], "to": target, "evidence": {"line": int(item["line"]), "kind": "import", "resolved": bool(resolved), "module": item["module"]}})
+    return {"nodes": nodes, "edges": edges, "limitations": ["Unresolved imports are labeled external and are not proof of a repository file relationship."] if any(edge["evidence"]["resolved"] is False for edge in edges) else []}
 
 
-@app.get("/api/v1/projects/{project_id}/report")
-def report(project_id: str, user: User = Depends(current_user)) -> dict[str, str]:
+class ReportRequest(BaseModel):
+    question: str = Field(default="", max_length=1000)
+    error_message: str = Field(default="", max_length=2000)
+    stack_trace: str = Field(default="", max_length=10000)
+    file: str | None = Field(default=None, max_length=500)
+    symbol: str | None = Field(default=None, max_length=200)
+
+
+@app.post("/api/v1/projects/{project_id}/report")
+def report(project_id: str, request: ReportRequest | None = None, user: User = Depends(current_user)) -> dict[str, str]:
     project = get_project(project_id, user)
-    lines = [f"# RepoPilot report", "", f"- Files: {len(project['files'])}", f"- Symbols: {len(project['index']['symbols'])}", f"- Imports: {len(project['index']['imports'])}", "", "## Symbols"]
+    request = request or ReportRequest()
+    investigation = run_investigation(project, request.question, request.error_message, request.stack_trace, request.file, request.symbol) if request.question or request.error_message or request.stack_trace or request.file or request.symbol else None
+    lines = ["# RepoPilot Investigation Report", "", f"- Repository: {project['source'].get('repo') or project['source'].get('filename', 'uploaded-repository')}", f"- Files: {len(project['files'])}", f"- Symbols: {len(project['index']['symbols'])}", f"- Imports: {len(project['index']['imports'])}", "", "## Analysis boundaries", "", "- Deterministic static analysis only; repository code was not executed.", "- Unresolved imports are not treated as confirmed repository relationships."]
+    if investigation:
+        lines.extend(["", "## Question", "", request.question or "(not supplied)", "", "## Summary", "", investigation["summary"], "", "## Confirmed evidence"])
+        lines.extend(f"- `{item['path']}:{item['line']}` — {item['text']}" for item in investigation["confirmed_evidence"])
+        lines.extend(["", "## Hypotheses"])
+        lines.extend(f"- **{item['confidence']}** — {item['text']}" for item in investigation["hypotheses"])
+        lines.extend(["", "## Recommended next steps"])
+        lines.extend(f"- {item}" for item in investigation["recommended_next_steps"])
+        lines.extend(["", "## Limitations"])
+        lines.extend(f"- {item}" for item in investigation["limitations"])
+    lines.extend(["", "## Symbols"])
     lines.extend(f"- `{s['name']}` — `{s['path']}:{s['line']}`" for s in project["index"]["symbols"])
     return {"markdown": "\n".join(lines)}
 

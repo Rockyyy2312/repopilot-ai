@@ -119,7 +119,7 @@ function App() {
   const doSearch = () => project && query.trim() && run(async () => { setResults(await api.search(project.id, query.trim())); navigate('search') })
   const doInvestigation = () => project && question.trim() && run(async () => { setInvestigation(await api.investigate(project.id, { question: question.trim(), error_message: errorMessage.trim(), stack_trace: stackTrace })); navigate('investigate') })
   const loadGraph = () => project && run(async () => { setGraphData(await api.graph(project.id)); navigate('architecture') })
-  const downloadReport = () => project && run(async () => { const { markdown } = await api.report(project.id); const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown' })); link.download = `${project.repository_name}-report.md`; link.click(); URL.revokeObjectURL(link.href) })
+  const downloadReport = () => project && run(async () => { const { markdown } = await api.report(project.id, { question: question.trim(), error_message: errorMessage.trim(), stack_trace: stackTrace }); const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown' })); link.download = `${project.repository_name}-report.md`; link.click(); URL.revokeObjectURL(link.href) })
   const openFile = (path: string) => { setSelected(path); window.history.pushState({}, '', `/file/${encodeURIComponent(path)}`); setRoute({ name: 'overview', filePath: path }) }
 
   if (authLoading) return <div className="app min-h-screen"><Header project={null} user={null} /><main className="loading-screen"><div className="loader-orb">✦</div><p>Checking your secure session…</p></main></div>

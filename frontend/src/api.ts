@@ -113,7 +113,7 @@ export const investigate = (id: string, input: InvestigationInput | string) => {
   return request<unknown>(`/projects/${id}/investigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).then(normalizeInvestigation)
 }
 export const graph = (id: string) => request<Graph>(`/projects/${id}/graph`)
-export const report = (id: string) => request<{ markdown: string }>(`/projects/${id}/report`)
+export const report = (id: string, input?: InvestigationInput) => request<{ markdown: string }>(`/projects/${id}/report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input || {}) })
 export const me = () => request<{ authenticated: boolean; user: AuthUser | null }>('/auth/me')
 export const register = (email: string, password: string) => request<{ user: AuthUser }>('/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
 export const login = (email: string, password: string) => request<{ user: AuthUser }>('/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
