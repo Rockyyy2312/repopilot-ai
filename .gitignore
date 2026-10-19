@@ -23,3 +23,5 @@ backend/*.pyc
 # Generated reports and logs
 *.log
 coverage/
+
+backend/data/
