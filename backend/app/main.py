@@ -12,6 +12,7 @@ import time
 import uuid
 import urllib.request
 import urllib.parse
+import urllib.error
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -132,6 +133,10 @@ def fetch_github_archive(owner: str, repo: str) -> bytes:
         archive_url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{urllib.parse.quote(branch, safe='')}"
     except HTTPException:
         raise
+    except urllib.error.HTTPError as exc:
+        status = 404 if exc.code == 404 else 429 if exc.code == 403 else 502
+        message = "public GitHub repository was not found" if status == 404 else "GitHub request was rate limited" if status == 429 else "unable to resolve the public GitHub repository"
+        raise HTTPException(status, message) from exc
     except Exception as exc:
         raise HTTPException(502, "unable to resolve the public GitHub repository") from exc
     request = urllib.request.Request(archive_url, headers={"User-Agent": "RepoPilot-AI/0.1"})
@@ -143,6 +148,10 @@ def fetch_github_archive(owner: str, repo: str) -> bytes:
             data = response.read(MAX_ARCHIVE_BYTES + 1)
     except HTTPException:
         raise
+    except urllib.error.HTTPError as exc:
+        status = 404 if exc.code == 404 else 429 if exc.code == 403 else 502
+        message = "public GitHub repository archive was not found" if status == 404 else "GitHub request was rate limited" if status == 429 else "unable to download the public GitHub repository"
+        raise HTTPException(status, message) from exc
     except Exception as exc:
         raise HTTPException(502, "unable to download the public GitHub repository") from exc
     if len(data) > MAX_ARCHIVE_BYTES:
@@ -274,6 +283,8 @@ def create_project(files: dict[str, str], source: dict[str, Any], user_id: str =
         "created_at": time.time(),
         "accessed_at": time.time(),
     }
+    if not project["files"]:
+        raise HTTPException(422, "repository contains no analyzable UTF-8 files")
     if count_projects(user_id) >= MAX_PROJECTS_PER_USER:
         raise HTTPException(429, "project quota reached; remove an existing project before importing another")
     save_project(project)

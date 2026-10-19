@@ -175,6 +175,13 @@ def test_archive_import_rejects_invalid_type_and_malformed_content():
     assert malformed.status_code == 400
 
 
+def test_archive_import_rejects_archives_without_analyzable_files():
+    response = client.post("/api/v1/projects/import/archive", files={"file": ("empty.zip", archive(files={".env": "secret=true"}), "application/zip")})
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "repository contains no analyzable UTF-8 files"
+
+
 def test_archive_import_rejects_compressed_size_limit():
     response = client.post(
         "/api/v1/projects/import/archive",

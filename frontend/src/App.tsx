@@ -109,8 +109,24 @@ function App() {
     setGraphData(null)
   }
 
-  const submitUrl = () => url.trim() && run(async () => loadProject(await api.importGithub(url.trim())))
-  const upload = (event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (file) run(async () => loadProject(await api.importArchive(file))) }
+  const submitUrl = () => {
+    const value = url.trim()
+    if (loading) return
+    if (!/^https:\/\/github\.com\/[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}(?:\.git)?\/?$/.test(value)) {
+      setError('Enter a valid public GitHub repository URL, for example https://github.com/owner/repository.')
+      return
+    }
+    void run(async () => loadProject(await api.importGithub(value)))
+  }
+  const upload = (event: ChangeEvent<HTMLInputElement>) => {
+    if (loading) return
+    const file = event.target.files?.[0]
+    if (!file) return
+    const allowed = /\.(zip|tar|tar\.gz|tgz)$/i.test(file.name)
+    if (!allowed) { setError('Choose a ZIP, TAR, TAR.GZ, or TGZ archive.'); event.target.value = ''; return }
+    if (file.size > 25 * 1024 * 1024) { setError('The archive must be 25 MB or smaller.'); event.target.value = ''; return }
+    void run(async () => loadProject(await api.importArchive(file)))
+  }
 
   useEffect(() => {
     const filePath = route.filePath || selected

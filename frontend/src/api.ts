@@ -4,6 +4,27 @@ export type ImportResult = { module: string; location: Location }
 export type FileAnalysis = { path: string; language: string | null; size: number; symbols: SymbolResult[]; imports: ImportResult[]; status: string; limitation: string | null }
 export type Analysis = { files: FileAnalysis[]; tree: Record<string, unknown>; languages: Record<string, number>; symbols: SymbolResult[]; imports: ImportResult[]; excluded: Array<{ path: string; reason: string }>; errors: Array<{ path: string; reason: string }> }
 export type ImportResponse = { id: string; index?: { symbols: unknown[]; imports: unknown[] }; repository_name: string; source: { type: string; url?: string; filename?: string }; file_count: number; languages: Record<string, number>; symbol_count: number; import_count: number; tree: Record<string, unknown>; warnings: Array<{ path: string; reason: string }>; analysis: Analysis }
+
+export const normalizeImport = (data: unknown): ImportResponse => {
+  const root = objectValue(data)
+  const id = textValue(root.id)
+  const repositoryName = textValue(root.repository_name)
+  const analysis = objectValue(root.analysis)
+  if (!id || !repositoryName || !Array.isArray(analysis.files)) throw new Error('Import completed without a usable analysis result')
+  return {
+    id, repository_name: repositoryName,
+    source: objectValue(root.source) as ImportResponse['source'],
+    file_count: typeof root.file_count === 'number' ? root.file_count : analysis.files.length,
+    languages: objectValue(root.languages) as Record<string, number>,
+    symbol_count: typeof root.symbol_count === 'number' ? root.symbol_count : 0,
+    import_count: typeof root.import_count === 'number' ? root.import_count : 0,
+    tree: objectValue(root.tree),
+    warnings: arrayValue(root.warnings).flatMap(item => { const value = objectValue(item); const path = textValue(value.path); return path ? [{ path, reason: textValue(value.reason) }] : [] }),
+    analysis: analysis as unknown as Analysis,
+    index: objectValue(root.index) as ImportResponse['index'],
+  }
+}
+
 export type SearchResult = { path: string; line: number; text: string; kind: string; language: string | null }
 export type InvestigationEvidence = { path: string; line: number | null; text: string; kind: string }
 export type InvestigationSymbol = { name: string; kind: string; path: string; line: number | null }
@@ -79,14 +100,23 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const token = csrfToken()
     if (token) headers.set('X-CSRF-Token', token)
   }
-  const response = await fetch(base + url, { credentials: 'include', ...init, headers })
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 60_000)
+  try {
+    const response = await fetch(base + url, { credentials: 'include', ...init, headers, signal: init?.signal || controller.signal })
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { detail?: string } | null
     const error = new Error(body?.detail || `Request failed (${response.status})`)
     ;(error as Error & { status?: number }).status = response.status
     throw error
+    }
+    return response.json() as Promise<T>
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('The request timed out. Please retry.')
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
   }
-  return response.json() as Promise<T>
 }
 
 export const normalizeSearch = (data: unknown): SearchResult[] => {
@@ -99,8 +129,8 @@ export const normalizeSearch = (data: unknown): SearchResult[] => {
   })
 }
 
-export const importGithub = (url: string) => request<ImportResponse>('/projects/import/github', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) })
-export const importArchive = (file: File) => { const form = new FormData(); form.append('file', file); return request<ImportResponse>('/projects/import/archive', { method: 'POST', body: form }) }
+export const importGithub = (url: string) => request<unknown>('/projects/import/github', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) }).then(normalizeImport)
+export const importArchive = (file: File) => { const form = new FormData(); form.append('file', file); return request<unknown>('/projects/import/archive', { method: 'POST', body: form }).then(normalizeImport) }
 export const listProjects = () => request<{ projects: ImportResponse[] }>('/projects')
 export const getProject = (id: string) => request<ImportResponse>(`/projects/${id}`)
 export const deleteProject = (id: string) => request<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE' })

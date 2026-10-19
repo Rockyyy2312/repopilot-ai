@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeInvestigation, normalizeSearch } from './api'
+import { normalizeImport, normalizeInvestigation, normalizeSearch } from './api'
+
+describe('normalizeImport', () => {
+  it('requires an id, repository name, and analyzed files', () => {
+    expect(normalizeImport({ id: 'p1', repository_name: 'repo', analysis: { files: [] } }).file_count).toBe(0)
+    expect(() => normalizeImport({ id: 'p1', repository_name: 'repo' })).toThrow('usable analysis result')
+  })
+
+  it('normalizes optional import fields without fabricating a success payload', () => {
+    expect(normalizeImport({ id: 'p1', repository_name: 'repo', analysis: { files: [{ path: 'main.py' }] } })).toMatchObject({
+      id: 'p1', repository_name: 'repo', file_count: 1, symbol_count: 0, import_count: 0, warnings: [],
+    })
+  })
+})
+
 describe('normalizeSearch', () => {
   it('keeps enhanced metadata and ignores malformed API rows', () => { expect(normalizeSearch({ results: [{ path: 'src/app.ts', line: 12, text: 'fetch()', kind: 'symbol', language: 'TypeScript' }, { path: 'README.md', line: 'bad' }, null] })).toEqual([{ path: 'src/app.ts', line: 12, text: 'fetch()', kind: 'symbol', language: 'TypeScript' }]) })
   it('supplies safe defaults for older result rows', () => { expect(normalizeSearch({ results: [{ path: 'README.md', line: 3, text: 'hello' }] })).toEqual([{ path: 'README.md', line: 3, text: 'hello', kind: 'content', language: null }]) })

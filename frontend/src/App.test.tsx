@@ -32,6 +32,39 @@ describe('App workspace shell', () => {
     expect(document.body.textContent).toContain('Code search')
     expect(document.querySelector('aside')).not.toBeNull()
   })
+
+  it('shows a validation error without sending an invalid GitHub URL', async () => {
+    await act(async () => { root.render(<App />) })
+    await act(async () => { await Promise.resolve() })
+    const input = document.querySelector('input[aria-label="GitHub repository URL"]') as HTMLInputElement
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setter?.call(input, 'https://example.com/not-github')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const importButton = Array.from(document.querySelectorAll('button')).find(button => button.textContent?.includes('Import repository')) as HTMLButtonElement
+    await act(async () => { importButton.click() })
+    expect(api.importGithub).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('Enter a valid public GitHub repository URL')
+  })
+
+  it('loads the returned project tree after a successful import', async () => {
+    vi.mocked(api.importGithub).mockResolvedValue({ id: 'p1', repository_name: 'repo', source: { type: 'github', url: 'https://github.com/owner/repo' }, file_count: 1, languages: { python: 1 }, symbol_count: 0, import_count: 0, tree: {}, warnings: [], analysis: { files: [], tree: {}, languages: {}, symbols: [], imports: [], excluded: [], errors: [] } })
+    vi.mocked(api.getTree).mockResolvedValue({ project_id: 'p1', files: ['repo/main.py'], tree: {}, excluded: [] })
+    await act(async () => { root.render(<App />) })
+    await act(async () => { await Promise.resolve() })
+    const input = document.querySelector('input[aria-label="GitHub repository URL"]') as HTMLInputElement
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setter?.call(input, 'https://github.com/owner/repo')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const importButton = Array.from(document.querySelectorAll('button')).find(button => button.textContent?.includes('Import repository')) as HTMLButtonElement
+    await act(async () => { importButton.click(); await Promise.resolve() })
+    expect(api.importGithub).toHaveBeenCalledWith('https://github.com/owner/repo')
+    expect(api.getTree).toHaveBeenCalledWith('p1')
+    expect(document.body.textContent).toContain('repo')
+  })
 })
 
 
