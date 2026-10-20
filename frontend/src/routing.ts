@@ -1,4 +1,4 @@
-export type RouteName = 'landing' | 'login' | 'register' | 'overview' | 'search' | 'investigate' | 'architecture' | 'settings' | 'not-found'
+export type RouteName = 'landing' | 'login' | 'register' | 'overview' | 'search' | 'investigate' | 'architecture' | 'repositories' | 'settings' | 'not-found'
 export type AppRoute = { name: RouteName; filePath?: string }
 
 export function routeForPath(pathname: string): AppRoute {
@@ -10,6 +10,7 @@ export function routeForPath(pathname: string): AppRoute {
   if (path === '/search') return { name: 'search' }
   if (path === '/investigate') return { name: 'investigate' }
   if (path === '/architecture') return { name: 'architecture' }
+  if (path === '/repositories') return { name: 'repositories' }
   if (path === '/settings') return { name: 'settings' }
   if (path.startsWith('/file/')) {
     const encoded = path.slice('/file/'.length)

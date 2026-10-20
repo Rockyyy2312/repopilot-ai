@@ -93,6 +93,64 @@ describe('empty workspace navigation', () => {
   })
 })
 
+describe('repository-aware workspace pages', () => {
+  let workspaceRoot: Root
+  const project = { id: 'p1', repository_name: 'repo-one', source: { type: 'github', url: 'https://github.com/owner/repo-one' }, file_count: 2, languages: { python: 2 }, symbol_count: 1, import_count: 1, tree: {}, warnings: [], analysis: { files: [{ path: 'main.py', language: 'python', size: 10, symbols: [], imports: [], status: 'analyzed', limitation: null }], tree: {}, languages: { python: 2 }, symbols: [], imports: [], excluded: [], errors: [] } }
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="root"></div>'
+    window.history.replaceState({}, '', '/workspace')
+    localStorage.clear()
+    vi.mocked(api.me).mockResolvedValue({ authenticated: true, user: { id: 'u1', email: 'dev@example.com' } })
+    vi.mocked(api.listProjects).mockResolvedValue({ projects: [project] })
+    vi.mocked(api.getTree).mockResolvedValue({ project_id: 'p1', files: ['main.py'], tree: {}, excluded: [] })
+    localStorage.setItem('repopilot.last_project.u1', 'p1')
+    workspaceRoot = createRoot(document.getElementById('root')!)
+  })
+  afterEach(() => { act(() => { workspaceRoot?.unmount() }) })
+
+  it('uses distinct page headings while keeping the selected repository', async () => {
+    await act(async () => { workspaceRoot.render(<App />); await Promise.resolve() })
+    expect(document.querySelector('h1')?.textContent).toBe('Understand your codebase.')
+    expect(document.body.textContent).toContain('repo-one')
+    const searchButton = Array.from(document.querySelectorAll('nav button')).find(button => button.textContent?.includes('Code search')) as HTMLButtonElement
+    await act(async () => { searchButton.click() })
+    expect(document.querySelector('h1')?.textContent).toBe('Find exact source evidence.')
+    expect(document.body.textContent).toContain('repo-one')
+    const settingsButton = Array.from(document.querySelectorAll('nav button')).find(button => button.textContent?.includes('Settings')) as HTMLButtonElement
+    await act(async () => { settingsButton.click() })
+    expect(document.querySelector('h1')?.textContent).toBe('Control this workspace.')
+    const repositoriesButton = Array.from(document.querySelectorAll('nav button')).find(button => button.textContent?.includes('Repositories')) as HTMLButtonElement
+    await act(async () => { repositoriesButton.click() })
+    expect(document.querySelector('h1')?.textContent).toBe('Manage indexed codebases.')
+    expect(document.body.textContent).toContain('repo-one')
+  })
+
+  it('persists the supported reduced-motion setting', async () => {
+    await act(async () => { workspaceRoot.render(<App />); await Promise.resolve() })
+    const settingsButton = Array.from(document.querySelectorAll('nav button')).find(button => button.textContent?.includes('Settings')) as HTMLButtonElement
+    await act(async () => { settingsButton.click() })
+    const toggle = document.querySelector('input[type="checkbox"]') as HTMLInputElement
+    await act(async () => { toggle.click() })
+    expect(document.documentElement.dataset.reducedMotion).toBe('true')
+    expect(localStorage.getItem('repopilot.settings.u1')).toContain('"reducedMotion":true')
+  })
+
+  it('shows a visible API error and retry affordance for search failures', async () => {
+    vi.mocked(api.search).mockRejectedValueOnce(new Error('Search service unavailable'))
+    await act(async () => { workspaceRoot.render(<App />); await Promise.resolve() })
+    const searchButton = Array.from(document.querySelectorAll('nav button')).find(button => button.textContent?.includes('Code search')) as HTMLButtonElement
+    await act(async () => { searchButton.click() })
+    const input = document.querySelector('input[aria-label="Search query"]') as HTMLInputElement
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    await act(async () => { setter?.call(input, 'startup'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+    const submit = document.querySelector('.search-row button') as HTMLButtonElement
+    await act(async () => { submit.click(); await new Promise(resolve => setTimeout(resolve, 0)) })
+    expect(api.search).toHaveBeenCalledWith('p1', 'startup')
+    expect(document.body.textContent).toContain('Search service unavailable')
+    expect(document.body.textContent).toContain('Retry')
+  })
+})
+
 describe('authentication flow', () => {
   let authRoot: Root
   beforeEach(() => {

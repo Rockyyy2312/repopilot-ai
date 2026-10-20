@@ -9,6 +9,7 @@ describe('application routing', () => {
     expect(routeForPath('/search').name).toBe('search')
     expect(routeForPath('/investigate').name).toBe('investigate')
     expect(routeForPath('/architecture').name).toBe('architecture')
+    expect(routeForPath('/repositories').name).toBe('repositories')
     expect(routeForPath('/settings').name).toBe('settings')
   })
   it('supports encoded source file routes and useful not-found behavior', () => {
