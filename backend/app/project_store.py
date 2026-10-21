@@ -124,22 +124,31 @@ def count_projects(user_id: str) -> int:
 
 def list_projects(user_id: str) -> list[dict[str, Any]]:
     with connect() as connection:
-        rows = connection.execute("SELECT id, source_json, summary_json, created_at, accessed_at FROM projects WHERE user_id = ? ORDER BY accessed_at DESC", (user_id,)).fetchall()
+        rows = connection.execute("SELECT id, source_json, files_json, summary_json, created_at, accessed_at FROM projects WHERE user_id = ? ORDER BY accessed_at DESC", (user_id,)).fetchall()
     projects = []
     for row in rows:
         try:
             summary = json.loads(row["summary_json"]) if row["summary_json"] else {}
         except (TypeError, json.JSONDecodeError):
             summary = {}
+        source = json.loads(row["source_json"])
+        files = None
+        if not summary:
+            try:
+                files = json.loads(row["files_json"])
+            except (TypeError, json.JSONDecodeError):
+                files = {}
+            repository_name = source.get("repo") if source.get("type") == "github" else source.get("filename", "uploaded-repository")
+            summary = {"repository_name": repository_name, "file_count": len(files), "symbol_count": 0, "import_count": 0, "languages": {}, "warning_count": 0}
         projects.append({
             "id": row["id"],
-            "repository_name": summary.get("repository_name"),
-            "source": json.loads(row["source_json"]),
-            "file_count": summary.get("file_count"),
-            "symbol_count": summary.get("symbol_count"),
-            "import_count": summary.get("import_count"),
-            "languages": summary.get("languages"),
-            "warning_count": summary.get("warning_count"),
+            "repository_name": summary.get("repository_name") or "uploaded-repository",
+            "source": source,
+            "file_count": summary.get("file_count") or 0,
+            "symbol_count": summary.get("symbol_count") or 0,
+            "import_count": summary.get("import_count") or 0,
+            "languages": summary.get("languages") or {},
+            "warning_count": summary.get("warning_count") or 0,
             "created_at": row["created_at"],
             "accessed_at": row["accessed_at"],
         })
