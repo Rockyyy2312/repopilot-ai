@@ -1,5 +1,19 @@
-import { describe, expect, it } from 'vitest'
-import { normalizeImport, normalizeInvestigation, normalizeSearch } from './api'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { normalizeGraph, normalizeImport, normalizeInvestigation, normalizeOverview, normalizePreferences, normalizeProjectList, normalizeSearch, normalizeJob, request } from './api'
+
+afterEach(() => vi.restoreAllMocks())
+
+describe('request errors', () => {
+  it('turns FastAPI validation details into a useful message and preserves status', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: [{ loc: ['body', 'url'], msg: 'field required' }] }), { status: 422, headers: { 'Content-Type': 'application/json' } })))
+    await expect(request('/projects/import/github', { method: 'POST' })).rejects.toMatchObject({ message: 'Validation failed: body.url: field required', status: 422 })
+  })
+
+  it('turns network failures into an actionable Error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    await expect(request('/projects')).rejects.toMatchObject({ message: 'Unable to reach the API. Check your connection and try again.' })
+  })
+})
 
 describe('normalizeImport', () => {
   it('requires an id, repository name, and analyzed files', () => {
@@ -18,6 +32,20 @@ describe('normalizeSearch', () => {
   it('keeps enhanced metadata and ignores malformed API rows', () => { expect(normalizeSearch({ results: [{ path: 'src/app.ts', line: 12, text: 'fetch()', kind: 'symbol', language: 'TypeScript' }, { path: 'README.md', line: 'bad' }, null] })).toEqual([{ path: 'src/app.ts', line: 12, text: 'fetch()', kind: 'symbol', language: 'TypeScript' }]) })
   it('supplies safe defaults for older result rows', () => { expect(normalizeSearch({ results: [{ path: 'README.md', line: 3, text: 'hello' }] })).toEqual([{ path: 'README.md', line: 3, text: 'hello', kind: 'content', language: null }]) })
   it('normalizes missing payloads to an empty result set', () => { expect(normalizeSearch(undefined)).toEqual([]); expect(normalizeSearch({})).toEqual([]) })
+})
+
+describe('workspace response normalizers', () => {
+  it('guards overview, preferences, graph, and project-list payloads', () => {
+    expect(normalizeOverview({ project_id: 'p1', total_lines: 'bad', languages: [{ name: 'TypeScript', files: 2, lines: 10 }, null], warnings: [{ path: 'a.ts', reason: 'limited' }] })).toMatchObject({ project_id: 'p1', total_lines: 0, languages: [{ name: 'TypeScript', files: 2, lines: 10 }], warnings: [{ path: 'a.ts', reason: 'limited' }] })
+    expect(normalizePreferences({ display_name: 4, reduced_motion: 'yes', compact_mode: true })).toEqual({ display_name: '', reduced_motion: false, compact_mode: true })
+    expect(normalizeGraph({ nodes: [{ id: 'a.ts', type: 'file' }, { id: 2 }], edges: [{ from: 'a.ts', to: 'pkg', evidence: { resolved: true } }, { from: '', to: 'bad' }] })).toEqual({ nodes: [{ id: 'a.ts', type: 'file' }], edges: [{ from: 'a.ts', to: 'pkg', evidence: { line: 0, kind: 'import', resolved: true, module: undefined } }], limitations: [] })
+    expect(normalizeProjectList({ projects: [{ id: 'p1', repository_name: 'repo', analysis: { files: [] } }, { id: 'bad' }] }).projects).toHaveLength(1)
+  })
+
+  it('normalizes bounded graph and import job metadata', () => {
+    expect(normalizeGraph({ nodes: [], edges: [], truncated: { nodes: true, edges: false, total_nodes: 2500, total_edges: 4, limit: 2000 } }).truncated).toMatchObject({ nodes: true, total_nodes: 2500, limit: 2000 })
+    expect(normalizeJob({ id: 'job-1', status: 'running', progress: 1.5, message: 'Indexing', created_at: 1, updated_at: 2 })).toMatchObject({ id: 'job-1', status: 'running', progress: 1, message: 'Indexing' })
+  })
 })
 
 describe('normalizeInvestigation', () => {
