@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import hmac
 import json
 import secrets
@@ -14,23 +15,28 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import zipfile
+import base64
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.analysis import AnalysisConfig, analyze_files
-from app.analysis.engine import is_sensitive, safe_relative_path
+from app.analysis.engine import ANALYSIS_VERSION, is_sensitive, safe_relative_path
+from app.analysis.models import AnalysisResult, FileAnalysis, ImportRelation, SourceLocation, Symbol
 from app.investigation import investigate as run_investigation
 from app.search import SearchRequest, search_index
 from app.workspace import workspace_router
 from app.project_store import count_projects, delete_expired, delete_project, list_projects as stored_projects, load_project, save_project, touch_project
 from app.auth import APP_ENV, CSRF_COOKIE, SECURE_COOKIES, SESSION_COOKIE, SESSION_TTL, User, authenticate, create_session, create_user, delete_session, get_user
+from app.graph import build_graph
+from app.jobs import cancel_job, create_job, get_job, get_job_for_worker, update_job
 
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 MAX_FILES = 5000
@@ -45,6 +51,8 @@ MAX_PROJECTS_PER_USER = 10
 MAX_IMPORTS_PER_MINUTE = 6
 MAX_IMPORTS_IN_FLIGHT_PER_USER = 1
 MAX_REQUEST_BYTES = 30 * 1024 * 1024
+MAX_GRAPH_DEPTH = 25
+MAX_GRAPH_LIMIT = 10000
 ALLOWED_ORIGINS = {item.strip() for item in os.environ.get("REPOPILOT_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if item.strip()}
 ANALYSIS_CONFIG = AnalysisConfig(
     max_files=int(os.environ.get("REPOPILOT_MAX_FILES", MAX_FILES)),
@@ -86,10 +94,24 @@ PROJECTS: dict[str, dict[str, Any]] = {}
 IMPORT_STATE_LOCK = threading.Lock()
 IMPORT_TIMES: dict[str, list[float]] = {}
 IMPORT_IN_FLIGHT: dict[str, int] = {}
+# This executor is deliberately bounded and process-local. It is suitable for a
+# single-process deployment only; it is not a claim of durable/distributed workers.
+IMPORT_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="repopilot-import")
 
 
 class GithubImport(BaseModel):
     url: str
+
+
+class ImportJobRequest(BaseModel):
+    """Metadata for an asynchronous import; archive bytes may be base64 encoded."""
+    type: str | None = None
+    source_type: str | None = None
+    url: str | None = None
+    filename: str | None = None
+    archive_base64: str | None = None
+    data: str | None = None
+    source: dict[str, Any] | None = None
 
 
 class AuthRequest(BaseModel):
@@ -240,6 +262,96 @@ def import_to_dict(relation: Any) -> dict[str, Any]:
     return {"module": relation.module, "path": relation.location.path, "line": relation.location.line}
 
 
+def repository_name(source: dict[str, Any]) -> str:
+    if source.get("type") == "github":
+        return str(source.get("repo") or "uploaded-repository")
+    return str(source.get("filename") or "uploaded-repository")
+
+
+def analysis_input_hash(files: dict[str, str], source: dict[str, Any]) -> str:
+    payload = {
+        "version": ANALYSIS_VERSION,
+        "source": source,
+        "files": files,
+        "config": {
+            "max_files": ANALYSIS_CONFIG.max_files,
+            "max_file_bytes": ANALYSIS_CONFIG.max_file_bytes,
+            "excluded_dirs": sorted(ANALYSIS_CONFIG.excluded_dirs),
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def analysis_from_cache(value: Any) -> AnalysisResult | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        def location(item: dict[str, Any]) -> SourceLocation:
+            return SourceLocation(str(item["path"]), int(item["line"]))
+
+        def symbol(item: dict[str, Any]) -> Symbol:
+            return Symbol(str(item["name"]), str(item["kind"]), location(item["location"]))
+
+        def relation(item: dict[str, Any]) -> ImportRelation:
+            return ImportRelation(str(item["module"]), location(item["location"]))
+
+        files = []
+        for item in value["files"]:
+            files.append(FileAnalysis(
+                str(item["path"]), item.get("language"), int(item["size"]), str(item.get("content", "")),
+                [symbol(entry) for entry in item.get("symbols", [])],
+                [relation(entry) for entry in item.get("imports", [])],
+                str(item.get("status", "analyzed")), item.get("limitation"),
+            ))
+        return AnalysisResult(
+            files, value["tree"], {str(key): int(count) for key, count in value["languages"].items()},
+            [symbol(item) for item in value.get("symbols", [])],
+            [relation(item) for item in value.get("imports", [])],
+            list(value.get("excluded", [])), list(value.get("errors", [])),
+        )
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def set_analysis_cache(project: dict[str, Any], result: AnalysisResult) -> None:
+    warnings = result.excluded + result.errors + [
+        {"path": item.path, "reason": item.limitation or ""}
+        for item in result.files if item.limitation
+    ]
+    project["analysis"] = result
+    project["index"] = {
+        "symbols": [symbol_to_dict(item) for item in result.symbols],
+        "imports": [import_to_dict(item) for item in result.imports],
+    }
+    project["analysis_version"] = ANALYSIS_VERSION
+    project["analysis_input_hash"] = analysis_input_hash(project["files"], project["source"])
+    project["analysis_cache_json"] = result.to_dict(include_content=True)
+    project["summary"] = {
+        "repository_name": repository_name(project["source"]),
+        "file_count": len(project["files"]),
+        "symbol_count": len(result.symbols),
+        "import_count": len(result.imports),
+        "languages": result.languages,
+        "warning_count": len(warnings),
+    }
+
+
+def ensure_analysis(project: dict[str, Any]) -> None:
+    expected_hash = analysis_input_hash(project["files"], project["source"])
+    if project.get("analysis_version") == ANALYSIS_VERSION and project.get("analysis_input_hash") == expected_hash:
+        cached = analysis_from_cache(project.get("analysis_cache_json"))
+        if cached is not None:
+            project["analysis"] = cached
+            project["index"] = {
+                "symbols": [symbol_to_dict(item) for item in cached.symbols],
+                "imports": [import_to_dict(item) for item in cached.imports],
+            }
+            return
+    set_analysis_cache(project, analyze_files(project["files"], ANALYSIS_CONFIG))
+    save_project(project)
+
+
 
 def reserve_import(user_id: str) -> None:
     now = time.time()
@@ -283,6 +395,7 @@ def create_project(files: dict[str, str], source: dict[str, Any], user_id: str =
         raise HTTPException(422, "repository contains no analyzable UTF-8 files")
     if count_projects(user_id) >= MAX_PROJECTS_PER_USER:
         raise HTTPException(429, "project quota reached; remove an existing project before importing another")
+    set_analysis_cache(project, result)
     save_project(project)
     PROJECTS[project_id] = project
     while len(PROJECTS) > MAX_PROJECTS:
@@ -304,7 +417,7 @@ def import_response(project: dict[str, Any]) -> dict[str, Any]:
     warnings = result.excluded + result.errors + [{"path": item.path, "reason": item.limitation or ""} for item in result.files if item.limitation]
     return {
         "id": project["id"],
-        "repository_name": project["source"]["repo"] if project["source"]["type"] == "github" else project["source"].get("filename", "uploaded-repository"),
+        "repository_name": repository_name(project["source"]),
         "source": project["source"],
         "file_count": len(project["files"]),
         "languages": result.languages,
@@ -315,6 +428,85 @@ def import_response(project: dict[str, Any]) -> dict[str, Any]:
         "analysis": result.to_dict(include_content=False),
         "index": project["index"],
     }
+
+
+def _job_payload(payload: ImportJobRequest | dict[str, Any]) -> dict[str, Any]:
+    values = payload.model_dump() if isinstance(payload, ImportJobRequest) else dict(payload)
+    nested = values.get("source") if isinstance(values.get("source"), dict) else {}
+    source_type = values.get("type") or values.get("source_type") or nested.get("type")
+    source_type = str(source_type or ("github" if values.get("url") or nested.get("url") else "archive")).lower()
+    if source_type not in {"github", "archive"}:
+        raise HTTPException(400, "import type must be github or archive")
+    url = values.get("url") or nested.get("url")
+    filename = values.get("filename") or nested.get("filename") or "uploaded-repository.zip"
+    encoded = values.get("archive_base64") or values.get("data") or nested.get("archive_base64") or nested.get("data")
+    if source_type == "github":
+        if not isinstance(url, str):
+            raise HTTPException(400, "github import jobs require a url")
+        owner, repo = validate_github_url(url)
+        return {"type": "github", "url": url, "owner": owner, "repo": repo}
+    if not isinstance(encoded, str):
+        raise HTTPException(400, "archive import jobs require archive_base64 metadata")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise HTTPException(400, "archive_base64 must be valid base64") from exc
+    if len(data) > MAX_ARCHIVE_BYTES:
+        raise HTTPException(413, "archive exceeds size limit")
+    if not isinstance(filename, str) or not filename:
+        raise HTTPException(400, "archive filename is required")
+    return {"type": "archive", "filename": filename[:250], "archive_base64": encoded}
+
+
+def _job_is_cancelled(job_id: str) -> bool:
+    job = get_job_for_worker(job_id)
+    return not job or job["status"] == "cancelled"
+
+
+def _run_import_job(job_id: str) -> None:
+    job = get_job_for_worker(job_id)
+    if not job or job["status"] != "queued":
+        return
+    if update_job(job_id, status="running", progress=0.05, message="Preparing import", only_status="queued") is None:
+        return
+    job = get_job_for_worker(job_id)
+    if not job:
+        return
+    payload = job["payload"]
+    # The worker-only record includes ownership; public job responses intentionally omit it.
+    user_id = job.get("user_id")
+    if not user_id:
+        update_job(job_id, status="failed", message="Import owner is unavailable", error="job owner not found", only_status="running")
+        return
+    reserved = False
+    try:
+        reserve_import(user_id)
+        reserved = True
+        if _job_is_cancelled(job_id):
+            return
+        if payload["type"] == "github":
+            update_job(job_id, progress=0.2, message="Downloading public GitHub repository")
+            data = fetch_github_archive(payload["owner"], payload["repo"])
+            files = extract_archive(data, f"{payload['repo']}.zip")
+            source = {"type": "github", "url": payload["url"], "owner": payload["owner"], "repo": payload["repo"]}
+        else:
+            update_job(job_id, progress=0.2, message="Reading archive")
+            data = base64.b64decode(payload["archive_base64"], validate=True)
+            files = extract_archive(data, payload["filename"])
+            source = {"type": "archive", "filename": payload["filename"]}
+        if _job_is_cancelled(job_id):
+            return
+        update_job(job_id, progress=0.65, message="Analyzing repository")
+        project = create_project(files, source, user_id)
+        result = import_response(project)
+        update_job(job_id, status="succeeded", progress=1, message="Import completed", result=result, only_status="running")
+    except Exception as exc:
+        if not _job_is_cancelled(job_id):
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            update_job(job_id, status="failed", progress=1, message="Import failed", error=str(detail), only_status="running")
+    finally:
+        if reserved:
+            release_import(user_id)
 
 
 def current_user(session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> User:
@@ -330,15 +522,14 @@ def get_project(project_id: str, user: User) -> dict[str, Any]:
     if not project:
         stored = load_project(project_id)
         if stored:
-            result = analyze_files(stored["files"], ANALYSIS_CONFIG)
-            stored["analysis"] = result
-            stored["index"] = {"symbols": [symbol_to_dict(item) for item in result.symbols], "imports": [import_to_dict(item) for item in result.imports]}
             PROJECTS[project_id] = stored
             project = stored
     if not project:
         raise HTTPException(404, "project not found")
     if project.get("user_id") != user.id:
         raise HTTPException(404, "project not found")
+    ensure_analysis(project)
+    PROJECTS[project_id] = project
     project["accessed_at"] = time.time()
     touch_project(project_id, project["accessed_at"])
     return project
@@ -390,6 +581,53 @@ def auth_logout(response: Response, session: str | None = Cookie(default=None, a
     return {"ok": True}
 
 
+@app.post("/api/v1/projects/import/jobs", status_code=202)
+async def import_job(request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
+    """Queue GitHub metadata or an uploaded archive for the bounded local worker."""
+    content_type = request.headers.get("content-type", "")
+    if content_type.lower().startswith("multipart/"):
+        form = await request.form()
+        raw: dict[str, Any] = {key: value for key, value in form.items() if key != "file" and isinstance(value, str)}
+        upload = form.get("file")
+        if isinstance(upload, UploadFile):
+            data = await upload.read(MAX_ARCHIVE_BYTES + 1)
+            await upload.close()
+            if len(data) > MAX_ARCHIVE_BYTES:
+                raise HTTPException(413, "archive exceeds size limit")
+            raw["type"] = raw.get("type") or "archive"
+            raw["filename"] = upload.filename or raw.get("filename") or "uploaded-repository.zip"
+            raw["archive_base64"] = base64.b64encode(data).decode("ascii")
+        elif raw.get("type") == "archive":
+            raise HTTPException(400, "archive upload is required")
+    else:
+        try:
+            raw = await request.json()
+        except Exception as exc:
+            raise HTTPException(400, "expected JSON import metadata") from exc
+        if not isinstance(raw, dict):
+            raise HTTPException(400, "expected an import metadata object")
+    payload = _job_payload(raw)
+    job = create_job(user.id, "repository_import", payload)
+    IMPORT_JOB_EXECUTOR.submit(_run_import_job, job["id"])
+    return {"job_id": job["id"], **job}
+
+
+@app.get("/api/v1/jobs/{job_id}")
+def job_status(job_id: str, user: User = Depends(current_user)) -> dict[str, Any]:
+    job = get_job(job_id, user.id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    return job
+
+
+@app.post("/api/v1/jobs/{job_id}/cancel")
+def job_cancel(job_id: str, user: User = Depends(current_user)) -> dict[str, Any]:
+    job = cancel_job(job_id, user.id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    return job
+
+
 @app.post("/api/v1/projects/import/github")
 def import_github(payload: GithubImport, user: User = Depends(current_user)) -> dict[str, Any]:
     reserve_import(user.id)
@@ -418,17 +656,7 @@ async def import_archive(file: UploadFile = File(...), user: User = Depends(curr
 @app.get("/api/v1/projects")
 def project_list(user: User = Depends(current_user)) -> dict[str, Any]:
     cleanup_projects()
-    items = []
-    for item in stored_projects(user.id):
-        try:
-            project = get_project(item["id"], user)
-        except HTTPException as exc:
-            # Retention or a concurrent deletion may remove a listed snapshot.
-            if exc.status_code == 404:
-                continue
-            raise
-        items.append(import_response(project))
-    return {"projects": items}
+    return {"projects": stored_projects(user.id)}
 
 
 @app.get("/api/v1/projects/{project_id}")
@@ -501,18 +729,12 @@ def resolve_import(source_path: str, module: str, known_paths: set[str]) -> str 
 
 
 @app.get("/api/v1/projects/{project_id}/graph")
-def graph(project_id: str, user: User = Depends(current_user)) -> dict[str, Any]:
+def graph(project_id: str, scope: str | None = Query(default=None, max_length=500),
+          depth: int | None = Query(default=None, ge=0, le=MAX_GRAPH_DEPTH),
+          limit: int | None = Query(default=None, ge=1, le=MAX_GRAPH_LIMIT),
+          user: User = Depends(current_user)) -> dict[str, Any]:
     project = get_project(project_id, user)
-    known_paths = set(project["files"])
-    nodes = [{"id": path, "type": "file"} for path in sorted(known_paths)]
-    edges = []
-    for item in project["index"]["imports"]:
-        resolved = resolve_import(item["path"], item["module"], known_paths)
-        target = resolved or item["module"]
-        if not resolved and not any(node["id"] == target for node in nodes):
-            nodes.append({"id": target, "type": "external"})
-        edges.append({"from": item["path"], "to": target, "evidence": {"line": int(item["line"]), "kind": "import", "resolved": bool(resolved), "module": item["module"]}})
-    return {"nodes": nodes, "edges": edges, "limitations": ["Unresolved imports are labeled external and are not proof of a repository file relationship."] if any(edge["evidence"]["resolved"] is False for edge in edges) else []}
+    return build_graph(project, resolve_import, scope=scope, depth=depth, limit=limit)
 
 
 class ReportRequest(BaseModel):

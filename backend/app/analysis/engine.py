@@ -11,6 +11,10 @@ from .models import AnalysisResult, FileAnalysis
 from .parsers import parse_file
 
 
+# Bump whenever analysis semantics change.  Persisted caches with an older
+# version are ignored and rebuilt by the project loader.
+ANALYSIS_VERSION = "1"
+
 DEFAULT_EXCLUDED_DIRS = frozenset({".git", "node_modules", ".venv", "venv", "env", "__pycache__", "dist", "build", ".cache", ".pytest_cache", ".mypy_cache", ".tox", "coverage", "target", "vendor"})
 SENSITIVE_NAMES = frozenset({".env", ".env.local", ".env.production", ".env.development", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials", "credentials.json", "secrets.json"})
 SENSITIVE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks")
