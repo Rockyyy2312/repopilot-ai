@@ -66,6 +66,7 @@ function SourcePane({ project, location, query = '', onClose }: ProjectProps & {
   const [full, setFull] = useState(false)
   const [copyStatus, setCopyStatus] = useState('')
   const selectedLine = useRef<HTMLDivElement>(null)
+  const closeButton = useRef<HTMLButtonElement>(null)
   const path = location?.path
   useEffect(() => {
     let active = true
@@ -78,6 +79,9 @@ function SourcePane({ project, location, query = '', onClose }: ProjectProps & {
   useEffect(() => {
     if (full && selectedLine.current) selectedLine.current.scrollIntoView?.({ block: 'nearest' })
   }, [source, location?.line, full])
+  useEffect(() => {
+    if (onClose && location) closeButton.current?.focus()
+  }, [onClose, location])
   const lines = source?.content.split('\n') || []
   const line = Math.max(1, location?.line || 1)
   const start = full ? 0 : Math.max(0, Math.min(line - 12, lines.length - 30))
@@ -89,7 +93,7 @@ function SourcePane({ project, location, query = '', onClose }: ProjectProps & {
     catch { setCopyStatus('Copy unavailable; select and copy the source below.') }
   }
   return <section className="ex-source" aria-label="Source inspector">
-    <header className="ex-source-header"><Icon name="code" /><div className="ex-source-title"><h2>{path ? filename(path) : 'Source inspector'}</h2><span className="ex-mono">{path || 'Select a result to inspect its source'}</span></div>{source && <button className="ex-button ex-button-small" onClick={copy}>Copy code</button>}{onClose && location && <button className="ex-icon-button" aria-label="Close source inspector" onClick={onClose}><Icon name="close" /></button>}</header>
+     <header className="ex-source-header"><Icon name="code" /><div className="ex-source-title"><h2>{path ? filename(path) : 'Source inspector'}</h2><span className="ex-mono">{path || 'Select a result to inspect its source'}</span></div>{source && <button className="ex-button ex-button-small" onClick={copy}>Copy code</button>}{onClose && location && <button ref={closeButton} className="ex-icon-button" aria-label="Close source inspector" onClick={onClose}><Icon name="close" /></button>}</header>
     {location && <div className="ex-source-toolbar"><span>{source ? `Lines ${start + 1}–${end} of ${lines.length}` : 'Repository snapshot'}</span><span className="ex-green">{location.line ? `Selected line ${location.line}` : 'File context'}</span></div>}
     {loading ? <div className="ex-loading" role="status">Loading source…</div> : error ? <ErrorNotice message={error} retry={() => setRetry(value => value + 1)} /> : source ? <>
       <div className="ex-code-scroll" tabIndex={0} aria-label={`Source of ${source.path}`}><div className="ex-code">{lines.slice(start, end).map((text, index) => <div key={start + index} ref={start + index + 1 === line ? selectedLine : undefined} className={`ex-code-line ${start + index + 1 === location?.line ? 'ex-code-selected' : ''}`} aria-current={start + index + 1 === location?.line ? 'location' : undefined}><span className="ex-line-number">{start + index + 1}</span><code><Highlight text={text || ' '} query={query} /></code></div>)}</div></div>
