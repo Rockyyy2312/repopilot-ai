@@ -51,6 +51,12 @@ def init_db() -> None:
             expires_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
+        CREATE TABLE IF NOT EXISTS user_preferences (
+            user_id TEXT PRIMARY KEY REFERENCES users(id),
+            display_name TEXT NOT NULL DEFAULT '' CHECK(length(display_name) <= 80),
+            reduced_motion INTEGER NOT NULL DEFAULT 0 CHECK(reduced_motion IN (0, 1)),
+            compact_mode INTEGER NOT NULL DEFAULT 0 CHECK(compact_mode IN (0, 1))
+        );
         """)
 
 
@@ -115,8 +121,23 @@ def delete_session(session_token: str | None) -> None:
         connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
 
 
+def user_preferences(user_id: str, changes: dict | None = None) -> dict:
+    """Read or atomically patch preferences in the existing authentication database."""
+    with _connect() as connection:
+        if changes:
+            connection.execute("INSERT OR IGNORE INTO user_preferences (user_id) VALUES (?)", (user_id,))
+            # Column names come only from this allowlist, never request keys.
+            columns = [key for key in ("display_name", "reduced_motion", "compact_mode") if key in changes]
+            if columns:
+                assignments = ", ".join(f"{key} = ?" for key in columns)
+                connection.execute(f"UPDATE user_preferences SET {assignments} WHERE user_id = ?", [changes[key] for key in columns] + [user_id])
+        row = connection.execute("SELECT display_name, reduced_motion, compact_mode FROM user_preferences WHERE user_id = ?", (user_id,)).fetchone()
+    return {"display_name": row["display_name"] if row else "", "reduced_motion": bool(row["reduced_motion"]) if row else False, "compact_mode": bool(row["compact_mode"]) if row else False}
+
+
 def reset_db() -> None:
     with _connect() as connection:
+        connection.execute("DELETE FROM user_preferences")
         connection.execute("DELETE FROM sessions")
         connection.execute("DELETE FROM users")
 

@@ -27,6 +27,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.analysis import AnalysisConfig, analyze_files
 from app.analysis.engine import is_sensitive, safe_relative_path
 from app.investigation import investigate as run_investigation
+from app.search import SearchRequest, search_index
+from app.workspace import workspace_router
 from app.project_store import count_projects, delete_expired, delete_project, list_projects as stored_projects, load_project, save_project, touch_project
 from app.auth import APP_ENV, CSRF_COOKIE, SECURE_COOKIES, SESSION_COOKIE, SESSION_TTL, User, authenticate, create_session, create_user, delete_session, get_user
 
@@ -101,12 +103,6 @@ class AuthRequest(BaseModel):
         if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", normalized):
             raise ValueError("a valid email address is required")
         return normalized
-
-
-class SearchRequest(BaseModel):
-    query: str = Field(min_length=0, max_length=200)
-    path: str | None = None
-    limit: int = Field(default=50, ge=1, le=MAX_SEARCH_RESULTS)
 
 
 class InvestigationRequest(BaseModel):
@@ -421,9 +417,16 @@ async def import_archive(file: UploadFile = File(...), user: User = Depends(curr
 
 @app.get("/api/v1/projects")
 def project_list(user: User = Depends(current_user)) -> dict[str, Any]:
+    cleanup_projects()
     items = []
     for item in stored_projects(user.id):
-        project = get_project(item["id"], user)
+        try:
+            project = get_project(item["id"], user)
+        except HTTPException as exc:
+            # Retention or a concurrent deletion may remove a listed snapshot.
+            if exc.status_code == 404:
+                continue
+            raise
         items.append(import_response(project))
     return {"projects": items}
 
@@ -465,53 +468,15 @@ def analysis(project_id: str, user: User = Depends(current_user)) -> dict[str, A
 
 @app.post("/api/v1/projects/{project_id}/search")
 def search(project_id: str, request: SearchRequest, user: User = Depends(current_user)) -> dict[str, Any]:
+    started = time.perf_counter()
     project = get_project(project_id, user)
-    needle = request.query.casefold()
-    if not needle:
-        return {"query": request.query, "results": []}
-    results = search_index(project, needle, request.path, request.limit)
-    return {"query": request.query, "results": results}
-
-
-def search_index(project: dict[str, Any], needle: str, requested_path: str | None, limit: int) -> list[dict[str, Any]]:
-    path_prefix = safe_path(requested_path) if requested_path else None
-    files_by_path = {item.path: item for item in project["analysis"].files}
-    candidates: dict[tuple[str, int], dict[str, Any]] = {}
-
-    def add(path: str, line: int, kind: str, score: int, text: str) -> None:
-        if path_prefix and not (path == path_prefix or path.startswith(path_prefix + "/")):
-            return
-        key = (path, line)
-        current = candidates.get(key)
-        result = {"path": path, "line": line, "text": text[:1000], "kind": kind, "language": files_by_path[path].language}
-        if current is None or score > current["_score"]:
-            result["_score"] = score
-            candidates[key] = result
-
-    for path, file in files_by_path.items():
-        path_lower = path.casefold()
-        if needle in path_lower:
-            exact_path = needle == path_lower or needle == path.rsplit("/", 1)[-1].casefold()
-            add(path, 1, "path", 80 if exact_path else 70, path)
-        lines = file.content.splitlines()
-        for line_number, line in enumerate(lines, 1):
-            if needle in line.casefold():
-                add(path, line_number, "content", 50, line)
-
-    for symbol in project["analysis"].symbols:
-        if symbol.name.casefold() == needle:
-            text = files_by_path[symbol.location.path].content.splitlines()[symbol.location.line - 1]
-            add(symbol.location.path, symbol.location.line, "symbol", 100, text)
-
-    for relation in project["analysis"].imports:
-        if relation.module.casefold() == needle:
-            text = files_by_path[relation.location.path].content.splitlines()[relation.location.line - 1]
-            add(relation.location.path, relation.location.line, "import", 90, text)
-
-    ranked = sorted(candidates.values(), key=lambda item: (-item["_score"], item["path"], item["line"]))
-    for result in ranked:
-        result.pop("_score", None)
-    return ranked[:limit]
+    results = search_index(project, request.query, request.path, language=request.language, kind=request.kind)
+    end = request.offset + request.limit
+    return {
+        "query": request.query, "results": results[request.offset:end],
+        "total_matches": len(results), "total_files": len({item["path"] for item in results}),
+        "has_more": end < len(results), "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+    }
 
 
 @app.post("/api/v1/projects/{project_id}/investigate")
@@ -576,6 +541,9 @@ def report(project_id: str, request: ReportRequest | None = None, user: User = D
     lines.extend(["", "## Symbols"])
     lines.extend(f"- `{s['name']}` — `{s['path']}:{s['line']}`" for s in project["index"]["symbols"])
     return {"markdown": "\n".join(lines)}
+
+
+app.include_router(workspace_router(current_user, get_project))
 
 
 frontend_dist = Path(os.environ.get("FRONTEND_DIST_DIR", "/app/frontend-dist"))
