@@ -7,10 +7,10 @@ import * as api from './api'
 vi.mock('./api', () => ({
   request: vi.fn(), me: vi.fn(), listProjects: vi.fn(), login: vi.fn(), register: vi.fn(), logout: vi.fn(),
   importGithub: vi.fn(), importArchive: vi.fn(), getTree: vi.fn(), getFile: vi.fn(), search: vi.fn(),
-  investigate: vi.fn(), graph: vi.fn(), report: vi.fn(), deleteProject: vi.fn(),
+  investigate: vi.fn(), graph: vi.fn(), report: vi.fn(), deleteProject: vi.fn(), startImportJobGithub: vi.fn(), startImportJobArchive: vi.fn(), getJob: vi.fn(), cancelJob: vi.fn(), normalizeImport: (value: unknown) => value,
 }))
 
-const project = { id: 'p1', repository_name: 'repo-one', source: { type: 'github', url: 'https://github.com/owner/repo-one' }, file_count: 2, languages: { python: 2 }, symbol_count: 1, import_count: 1, tree: {}, warnings: [], analysis: { files: [{ path: 'main.py', language: 'python', size: 10, symbols: [], imports: [], status: 'analyzed', limitation: null }], tree: {}, languages: { python: 2 }, symbols: [], imports: [], excluded: [], errors: [] } }
+const project = { id: 'p1', repository_name: 'repo-one', source: { type: 'github', url: 'https://github.com/owner/repo-one' }, file_count: 2, languages: { python: 2 }, symbol_count: 1, import_count: 1, warning_count: 0, created_at: 1_700_000_000, accessed_at: 1_700_000_000, tree: {}, warnings: [], analysis: { files: [{ path: 'main.py', language: 'python', size: 10, symbols: [], imports: [], status: 'analyzed', limitation: null }], tree: {}, languages: { python: 2 }, symbols: [], imports: [], excluded: [], errors: [] } }
 const overview = { project_id: 'p1', indexed_at: 1_700_000_000, total_lines: 42, total_bytes: 400, analyzed_files: 1, packages: [], languages: [{ name: 'python', files: 2, lines: 42 }], dependencies: [], warnings: [] }
 
 function defaultRequest(url: string): Promise<unknown> {
@@ -57,7 +57,7 @@ describe('workspace screen routing', () => {
   })
 
   it('loads an imported project into the overview screen', async () => {
-    vi.mocked(api.importGithub).mockResolvedValue(project)
+    vi.mocked(api.startImportJobGithub).mockResolvedValue({ id: 'job-1', status: 'succeeded', progress: 1, message: 'Import completed', result: project, created_at: 1, updated_at: 1 })
     vi.mocked(api.getTree).mockResolvedValue({ project_id: 'p1', files: ['main.py'], tree: {}, excluded: [] })
     await act(async () => { root.render(<App />); await Promise.resolve() })
     const repositories = Array.from(document.querySelectorAll('nav button')).find(item => item.textContent?.includes('Repositories')) as HTMLButtonElement
@@ -67,8 +67,7 @@ describe('workspace screen routing', () => {
     await act(async () => { setter?.call(input, 'https://github.com/owner/repo'); input.dispatchEvent(new Event('input', { bubbles: true })) })
     const button = Array.from(document.querySelectorAll('button')).find(item => item.textContent?.includes('Import repository')) as HTMLButtonElement
     await act(async () => { button.click(); await Promise.resolve() })
-    expect(api.importGithub).toHaveBeenCalledWith('https://github.com/owner/repo')
-    expect(api.getTree).toHaveBeenCalledWith('p1')
+    expect(api.startImportJobGithub).toHaveBeenCalledWith('https://github.com/owner/repo')
     expect(document.body.textContent).toContain('Codebase Overview')
   })
 
@@ -120,10 +119,20 @@ describe('repository-aware screens', () => {
     const button = Array.from(document.querySelectorAll('nav button')).find(item => item.textContent?.includes('Settings')) as HTMLButtonElement
     await act(async () => { button.click(); await Promise.resolve() })
     const toggle = document.querySelector('input[role="switch"]') as HTMLInputElement
-    await act(async () => { toggle.click() })
+    await act(async () => { toggle.click(); await Promise.resolve() })
     const save = Array.from(document.querySelectorAll('button')).find(item => item.textContent?.includes('Save Changes')) as HTMLButtonElement
     await act(async () => { save.click(); await Promise.resolve() })
     expect(api.request).toHaveBeenCalledWith('/users/me/preferences', expect.objectContaining({ method: 'PATCH' }))
+  })
+
+  it('applies compact density immediately from the settings preference', async () => {
+    await act(async () => { root.render(<App />); await Promise.resolve() })
+    const button = Array.from(document.querySelectorAll('nav button')).find(item => item.textContent?.includes('Settings')) as HTMLButtonElement
+    await act(async () => { button.click(); await Promise.resolve() })
+    const toggle = document.querySelector('input[aria-label="Compact workspace density"]') as HTMLInputElement
+    expect(toggle.closest('section')?.textContent).toContain('Interaction Preferences')
+    await act(async () => { toggle.click(); await Promise.resolve() })
+    expect(document.documentElement.dataset.compactMode).toBe('true')
   })
 
   it('shows a visible search error from the redesigned search workbench', async () => {

@@ -27,3 +27,18 @@ header{height:64px;position:sticky;top:0;z-index:40;display:flex;align-items:cen
 @media(max-width:820px){header{padding:0 16px}.session-label{display:none}.user-email{display:none}.shell{display:block}aside{position:relative;top:0;width:100%;height:auto;min-height:0;border-right:0;border-bottom:1px solid #e6eaf0;padding:14px 16px}.side-top{gap:12px}.side-brand{padding:0 4px 4px}.side-label{display:none}.workspace{margin:0 4px}.project-switcher{margin:0 4px}.aside-foot{display:none}nav{display:flex;gap:4px;overflow:auto;padding-bottom:2px}nav button{width:auto;white-space:nowrap;padding:9px 11px;font-size:12px}nav button .ico{width:18px}.content{padding:22px 16px 40px;overflow:visible}.topline{align-items:flex-start;flex-direction:column;margin-bottom:21px}.topline h1{font-size:28px}.topline .outline{width:100%}.overview-grid,.repository-grid,.settings-grid{grid-template-columns:1fr}.repo-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.repo-metrics>div{border-right:0;padding:0}.repo-list-heading{align-items:flex-start;flex-direction:column}.trust{align-items:flex-start;flex-wrap:wrap}.trust small{margin-left:0}.repo-url-row,.url-row{align-items:stretch;flex-direction:column}.repo-url-row .primary,.url-row button{width:100%}.search-row{align-items:stretch;flex-wrap:wrap}.search-row input{flex-basis:100%}.search-row button{flex:1}.search-row .outline{flex:0}.result-meta{flex-wrap:wrap}.result-meta b{order:4;width:100%;margin-left:0}.graph-wrap{height:470px}.graph-limit{margin-left:0}.architecture-card{padding:0}.preview{padding:16px}.auth-card{padding:30px 22px 24px}.auth-card h1{font-size:29px}.auth-row{align-items:flex-start;flex-direction:column}.auth-help{padding-left:0}}
 @media(max-width:520px){.brand b{font-size:15px}.brand span{font-size:8px}.header-right{gap:7px}.content{padding-left:12px;padding-right:12px}.tabs{width:100%}.tabs button{flex:1;padding-left:8px;padding-right:8px}.import-main,.repo-connect-card,.repo-upload-card,.settings-card{padding:18px}.repo-card-foot{align-items:flex-start;flex-direction:column}.metrics{grid-template-columns:1fr 1fr}.metrics>div{padding:0 8px}.graph-wrap{height:390px}.auth-page{padding:14px}.auth-card{padding:24px 17px 20px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}:root[data-reduced-motion="true"] *, :root[data-reduced-motion="true"] *::before, :root[data-reduced-motion="true"] *::after{scroll-behavior:auto!important;animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
+
+/* The preference is applied by App.tsx on the document root. Keep density
+   changes structural so every redesigned workspace scene benefits from it. */
+:root[data-compact-mode="true"] .content{padding-top:18px;padding-bottom:38px}
+:root[data-compact-mode="true"] .content .card{padding:17px}
+:root[data-compact-mode="true"] .content .mg-screen .card{padding:14px}
+:root[data-compact-mode="true"] .content .mg-screen .mg-stack,
+:root[data-compact-mode="true"] .content .mg-screen .mg-architecture-grid,
+:root[data-compact-mode="true"] .content .mg-screen .mg-import-grid,
+:root[data-compact-mode="true"] .content .mg-screen .mg-settings-grid,
+:root[data-compact-mode="true"] .content .mg-screen .mg-repository-grid{gap:11px}
+:root[data-compact-mode="true"] .content .mg-screen .mg-flow,
+:root[data-compact-mode="true"] .content .mg-screen .mg-canvas-empty,
+:root[data-compact-mode="true"] .content .mg-screen .mg-relationship-table{height:500px}
+:root[data-compact-mode="true"] .content .mg-screen .mg-compact-setting{border-color:#8bcab0;background:#effcf5}

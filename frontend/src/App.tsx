@@ -10,7 +10,7 @@ function App() {
   const [route, setRoute] = useState<AppRoute>(() => routeForPath(window.location.pathname))
   const [user, setUser] = useState<api.AuthUser | null>(null)
   const [project, setProject] = useState<api.ImportResponse | null>(null)
-  const [projects, setProjects] = useState<api.ImportResponse[]>([])
+  const [projects, setProjects] = useState<api.ProjectSummary[]>([])
   const [authLoading, setAuthLoading] = useState(true)
   const [authUnavailable, setAuthUnavailable] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
@@ -29,18 +29,26 @@ function App() {
     if (user) localStorage.setItem(`repopilot.last_project.${user.id}`, next.id)
   }
 
+  const openProjectSummary = async (next: api.ProjectSummary) => {
+    if (!next) return
+    try {
+      const detail = 'analysis' in next ? next as unknown as api.ImportResponse : await api.getProject(next.id)
+      rememberProject(detail)
+      navigate('overview', true)
+    } catch (reason) {
+      setWorkspaceError(reason instanceof Error ? reason.message : 'Could not open this repository.')
+    }
+  }
   const selectProject = async (id: string) => {
     const next = projects.find(item => item.id === id)
-    if (!next) return
-    rememberProject(next)
-    navigate('overview', true)
+    if (next) await openProjectSummary(next)
   }
 
   const importCompleted = async (next: api.ImportResponse) => {
     try {
-      await api.getTree(next.id)
       rememberProject(next)
-      setProjects(current => current.some(item => item.id === next.id) ? current.map(item => item.id === next.id ? next : item) : [next, ...current])
+      const summary: api.ProjectSummary = { id: next.id, repository_name: next.repository_name, source: next.source, file_count: next.file_count, languages: next.languages, symbol_count: next.symbol_count, import_count: next.import_count, warning_count: next.warnings.length, created_at: Date.now() / 1000, accessed_at: Date.now() / 1000 }
+      setProjects(current => current.some(item => item.id === next.id) ? current.map(item => item.id === next.id ? summary : item) : [summary, ...current])
       navigate('overview', true)
     } catch (reason) {
       setWorkspaceError(reason instanceof Error ? reason.message : 'The repository was imported but could not be opened.')
@@ -70,10 +78,7 @@ function App() {
       setProjects(result.projects)
       const savedId = localStorage.getItem(`repopilot.last_project.${user.id}`)
       const restored = result.projects.find(item => item.id === savedId) || (result.projects.length === 1 ? result.projects[0] : undefined)
-      if (restored) {
-        rememberProject(restored)
-        if (route.name === 'landing' || route.name === 'login' || route.name === 'register') navigate('overview', true)
-      }
+      if (restored) void openProjectSummary(restored)
     }).catch(reason => setWorkspaceError(reason instanceof Error ? reason.message : 'Could not load repositories.'))
   }, [user])
 
@@ -156,10 +161,10 @@ function AuthLanding({ initialMode, onModeChange, onAuthenticated }: { initialMo
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Authentication failed') }
     finally { setBusy(false) }
   }
-  return <div className="auth-page"><div className="auth-card"><div className="auth-brand"><div className="brand-mark">▣</div><div><b>RepoPilot</b><span>AI PLATFORM</span></div></div><span className="auth-version"><i /> RepoPilot AI · local workspace</span><h1>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1><p className="auth-detail">{mode === 'login' ? 'Sign in to access your repositories and code insights.' : 'Start exploring codebases and understanding architectures.'}</p><div className="auth-provider-note">Email authentication is enabled for this workspace.</div><div className="auth-divider"><span>OR CONTINUE WITH EMAIL</span></div><form onSubmit={submit}><label>Email<input type="email" required autoComplete="email" placeholder="developer@company.internal" value={email} onChange={event => setEmail(event.target.value)} /></label><label>Password<input type="password" required minLength={10} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} placeholder="At least 10 characters" value={password} onChange={event => setPassword(event.target.value)} /><small>Use 10–200 characters.</small></label>{success && <div className="auth-success" role="status">{success}</div>}{error && <div className="auth-error" role="alert">{error}</div>}<div className="auth-row"><label className="check-label"><input type="checkbox" /> Remember this device</label>{mode === 'login' && <span className="auth-help">Password reset is not configured.</span>}</div><button className="primary auth-submit" disabled={busy}>{busy ? 'Working…' : mode === 'login' ? 'Sign in to RepoPilot →' : 'Create account →'}</button></form><button className="auth-switch" onClick={() => switchMode(mode === 'login' ? 'register' : 'login')}>{mode === 'login' ? 'Need an account? Create one' : 'Already have an account? Sign in'}</button><div className="auth-footnote">Source is analyzed in a safe snapshot. Repository code is never executed.</div></div></div>
+  return <div className="auth-page"><div className="auth-card"><div className="auth-brand"><div className="brand-mark">▣</div><div><b>RepoPilot</b><span>AI PLATFORM</span></div></div><span className="auth-version"><i /> RepoPilot AI · local workspace</span><h1>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1><p className="auth-detail">{mode === 'login' ? 'Sign in to access your repositories and code insights.' : 'Start exploring codebases and understanding architectures.'}</p><div className="auth-provider-note">Email authentication is enabled for this workspace.</div><div className="auth-divider"><span>OR CONTINUE WITH EMAIL</span></div><form onSubmit={submit}><label>Email<input type="email" required autoComplete="email" placeholder="developer@company.internal" value={email} onChange={event => setEmail(event.target.value)} /></label><label>Password<input type="password" required minLength={10} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} placeholder="At least 10 characters" value={password} onChange={event => setPassword(event.target.value)} /><small>Use 10–200 characters.</small></label>{success && <div className="auth-success" role="status">{success}</div>}{error && <div className="auth-error" role="alert">{error}</div>}{mode === 'login' && <div className="auth-row auth-row-help"><span className="auth-help">Password reset is not configured.</span></div>}<button className="primary auth-submit" disabled={busy}>{busy ? 'Working…' : mode === 'login' ? 'Sign in to RepoPilot →' : 'Create account →'}</button></form><button className="auth-switch" onClick={() => switchMode(mode === 'login' ? 'register' : 'login')}>{mode === 'login' ? 'Need an account? Create one' : 'Already have an account? Sign in'}</button><div className="auth-footnote">Source is analyzed in a safe snapshot. Repository code is never executed.</div></div></div>
 }
 
-function Sidebar({ project, projects, route, navigate, onSelectProject }: { project: api.ImportResponse | null; projects: api.ImportResponse[]; route: AppRoute; navigate: (name: WorkspaceRoute) => void; onSelectProject: (id: string) => void }) {
+function Sidebar({ project, projects, route, navigate, onSelectProject }: { project: api.ImportResponse | null; projects: api.ProjectSummary[]; route: AppRoute; navigate: (name: WorkspaceRoute) => void; onSelectProject: (id: string) => void }) {
   const links: Array<[WorkspaceRoute, string, string]> = [['overview', '▦', 'Overview'], ['search', '⌕', 'Code Search'], ['investigate', '◈', 'Issue Assistant'], ['architecture', '⌬', 'Architecture'], ['repositories', '▤', 'Repositories'], ['settings', '⚙', 'Settings']]
   return <aside><div className="side-top"><div className="brand side-brand"><div className="brand-mark">▣</div><div><b>RepoPilot</b><span>AI PLATFORM</span></div></div><div className="side-label">WORKSPACE</div><div className="workspace"><div className="repo-icon">⌁</div><div className="workspace-copy"><b>{project ? project.repository_name : 'Your workspace'}</b><small>{project ? project.source.url?.replace('https://github.com/', '') || project.source.filename : 'Import a codebase to begin'}</small></div></div>{projects.length > 1 && <label className="project-switcher">Switch repository<select aria-label="Switch repository" value={project?.id || ''} onChange={event => onSelectProject(event.target.value)}><option value="" disabled>Select repository</option>{projects.map(item => <option value={item.id} key={item.id}>{item.repository_name}</option>)}</select></label>}<nav>{links.map(([value, glyph, label]) => <button key={value} className={route.name === value ? 'active' : ''} aria-current={route.name === value ? 'page' : undefined} onClick={() => navigate(value)}><span className="ico" aria-hidden="true">{glyph}</span><span>{label}</span></button>)}</nav></div><div className="aside-foot"><div className="limit"><b>Context engine</b><span>{project ? 'Synced to selected snapshot' : 'Ready for your first repository'}</span><small>Deterministic · {project ? 'Ready' : 'Waiting'}</small></div><small>REPOPILOT AI · EVIDENCE FIRST</small></div></aside>
 }
