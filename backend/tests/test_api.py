@@ -339,6 +339,76 @@ def test_project_survives_memory_cache_clear_and_can_be_deleted():
     assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
 
 
+def test_project_list_returns_lightweight_summary_contract():
+    project_id = import_zip(files={"repo/main.py": "import util\ndef greet(name):\n    return name\n", "repo/util.py": "class Helper:\n    pass\n"})
+
+    response = client.get("/api/v1/projects")
+
+    assert response.status_code == 200
+    item = next(item for item in response.json()["projects"] if item["id"] == project_id)
+    assert set(item) == {
+        "id", "repository_name", "source", "file_count", "symbol_count", "import_count",
+        "languages", "warning_count", "created_at", "accessed_at",
+    }
+    assert item["repository_name"] == "repo.zip"
+    assert item["file_count"] == 2
+    assert item["symbol_count"] == 2
+    assert item["import_count"] == 1
+    assert item["languages"] == {"python": 2}
+    assert item["warning_count"] == 0
+    assert "analysis" not in item and "tree" not in item and "index" not in item
+
+
+def test_project_detail_keeps_full_analysis_payload():
+    project_id = import_zip()
+
+    body = client.get(f"/api/v1/projects/{project_id}").json()
+
+    assert body["id"] == project_id
+    assert body["tree"]["repo"]["main.py"]["type"] == "file"
+    assert body["analysis"]["files"]
+    assert body["index"]["symbols"]
+
+
+def test_project_detail_reuses_persisted_analysis_cache(monkeypatch):
+    project_id = import_zip()
+    PROJECTS.clear()
+    calls = 0
+    original = main_module.analyze_files
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "analyze_files", counted)
+
+    response = client.get(f"/api/v1/projects/{project_id}")
+
+    assert response.status_code == 200
+    assert calls == 0
+
+
+def test_project_detail_rebuilds_cache_after_analysis_version_change(monkeypatch):
+    project_id = import_zip()
+    PROJECTS.clear()
+    calls = 0
+    original = main_module.analyze_files
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "analyze_files", counted)
+    monkeypatch.setattr(main_module, "ANALYSIS_VERSION", "test-version-change")
+
+    response = client.get(f"/api/v1/projects/{project_id}")
+
+    assert response.status_code == 200
+    assert calls == 1
+
+
 def test_report_contains_investigation_evidence_and_limitations():
     project_id = import_zip(files={"app.py": "from missing import Client\n"})
     response = client.post(f"/api/v1/projects/{project_id}/report", json={"question": "Why does startup fail?", "error_message": "ModuleNotFoundError: No module named 'missing'"})
