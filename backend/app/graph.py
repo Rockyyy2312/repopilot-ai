@@ -47,12 +47,16 @@ def build_graph(project: dict[str, Any], resolve_import: Callable[[str, str, set
     total_nodes = len(ordered_ids)
     total_edges = len(filtered_edges)
     node_truncated = False
+    edge_truncated = False
     if limit is not None and len(ordered_ids) > limit:
         allowed = set(ordered_ids[:limit])
         selected = selected & allowed
         filtered_edges = [edge for edge in filtered_edges if edge["from"] in allowed and edge["to"] in allowed]
         ordered_ids = ordered_ids[:limit]
         node_truncated = True
+    if limit is not None and len(filtered_edges) > limit:
+        filtered_edges = filtered_edges[:limit]
+        edge_truncated = True
     nodes = [{"id": node_id, "type": "file" if node_id in known_paths else "external"} for node_id in ordered_ids]
     edges = filtered_edges
     limitations = ["Unresolved imports are labeled external and are not proof of a repository file relationship."] if any(not edge["evidence"]["resolved"] for edge in raw_edges) else []
@@ -60,7 +64,7 @@ def build_graph(project: dict[str, Any], resolve_import: Callable[[str, str, set
     if scope is not None or depth is not None or limit is not None:
         result["truncated"] = {
             "nodes": node_truncated or len(ordered_ids) < total_nodes,
-            "edges": len(edges) < total_edges,
+            "edges": edge_truncated or len(edges) < total_edges,
             "total_nodes": total_nodes,
             "total_edges": total_edges,
             "scope": scope,
