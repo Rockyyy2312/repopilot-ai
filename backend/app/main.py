@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.error
 import zipfile
 import base64
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,8 @@ from app.workspace import workspace_router
 from app.project_store import count_projects, delete_expired, delete_project, list_projects as stored_projects, load_project, save_project, touch_project
 from app.auth import APP_ENV, CSRF_COOKIE, SECURE_COOKIES, SESSION_COOKIE, SESSION_TTL, User, authenticate, create_session, create_user, delete_session, get_user
 from app.graph import build_graph
-from app.jobs import cancel_job, create_job, get_job, get_job_for_worker, update_job
+from app.jobs import cancel_job, create_job, get_job, get_job_for_worker, recover_interrupted_jobs, update_job
+from app.rag import answer_question, load_knowledge_base, provider_from_environment
 
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 MAX_FILES = 5000
@@ -59,7 +61,13 @@ ANALYSIS_CONFIG = AnalysisConfig(
     max_file_bytes=int(os.environ.get("REPOPILOT_MAX_FILE_BYTES", MAX_FILE_BYTES)),
 )
 
-app = FastAPI(title="RepoPilot AI", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    recover_import_jobs()
+    yield
+
+
+app = FastAPI(title="RepoPilot AI", version="0.1.0", lifespan=lifespan)
 
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
@@ -134,6 +142,11 @@ class InvestigationRequest(BaseModel):
     file: str | None = Field(default=None, max_length=500)
     symbol: str | None = Field(default=None, max_length=200)
     query: str | None = Field(default=None, max_length=200)
+
+
+class AssistantRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    top_k: int = Field(default=5, ge=1, le=10)
 
 
 def fetch_github_archive(owner: str, repo: str) -> bytes:
@@ -509,6 +522,12 @@ def _run_import_job(job_id: str) -> None:
             release_import(user_id)
 
 
+def recover_import_jobs() -> None:
+    """Resubmit durable import records that survived a process restart."""
+    for job_id in recover_interrupted_jobs():
+        IMPORT_JOB_EXECUTOR.submit(_run_import_job, job_id)
+
+
 def current_user(session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> User:
     user = get_user(session)
     if not user:
@@ -714,6 +733,19 @@ def investigate(project_id: str, request: InvestigationRequest, user: User = Dep
     report["findings"] = [{"type": "finding", **item} for item in report["confirmed_evidence"]]
     report["hypotheses"] = [{"type": "hypothesis", **item} for item in report["hypotheses"]]
     return report
+
+
+@app.post("/api/v1/projects/{project_id}/assistant")
+def assistant(project_id: str, request: AssistantRequest, user: User = Depends(current_user)) -> dict[str, Any]:
+    """Answer a question using product knowledge plus cited repository evidence."""
+    project = get_project(project_id, user)
+    return answer_question(
+        request.question,
+        project,
+        load_knowledge_base(),
+        provider=provider_from_environment(),
+        top_k=request.top_k,
+    )
 
 
 def resolve_import(source_path: str, module: str, known_paths: set[str]) -> str | None:

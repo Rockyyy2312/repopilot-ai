@@ -15,7 +15,8 @@ COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/app ./app
 COPY backend/tests ./tests
-RUN python -m pytest -q
+COPY backend/data ./data
+RUN python -m pytest -q && touch .tests-passed
 
 FROM python:3.11-slim-bookworm AS runtime
 WORKDIR /app
@@ -25,14 +26,17 @@ ENV PYTHONUNBUFFERED=1 \
     REPOPILOT_SECURE_COOKIES=true \
     FRONTEND_DIST_DIR=/app/frontend-dist \
     REPOPILOT_DATA_DIR=/app/data \
-    REPOPILOT_AUTH_DB=/app/data/repopilot-auth.sqlite3
+    REPOPILOT_AUTH_DB=/app/data/repopilot-auth.sqlite3 \
+    REPOPILOT_ASSISTANT_DATASET=/app/assistant-data/assistant_qa.jsonl
 
 RUN addgroup --system --gid 10001 repopilot \
     && adduser --system --uid 10001 --ingroup repopilot --home /nonexistent --no-create-home repopilot
 COPY backend/requirements-runtime.txt ./requirements-runtime.txt
 RUN pip install --no-cache-dir -r requirements-runtime.txt
 COPY backend/app ./app
+COPY backend/data/assistant_qa.jsonl ./assistant-data/assistant_qa.jsonl
 COPY --from=frontend-build /build/frontend/dist ./frontend-dist
+COPY --from=backend-test /build/backend/.tests-passed /tmp/backend-tests-passed
 RUN chown -R repopilot:repopilot /app
 
 USER repopilot
