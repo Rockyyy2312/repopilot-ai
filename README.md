@@ -79,6 +79,19 @@ cd frontend
 npm test
 ```
 
+On Windows, where `make` may not be installed, run the equivalent checks directly:
+
+```powershell
+cd backend
+python -m pytest -q
+python -m compileall -q app
+
+cd ..\frontend
+npm test -- --run
+npm run build
+npm run test:styles
+```
+
 The frontend uses `package-lock.json`; the backend pins all Python dependencies in `requirements.txt`. The backend stores auth and project metadata under `REPOPILOT_DATA_DIR`; mount that directory in deployments and provide a stable `REPOPILOT_SESSION_SECRET`.
 
 ## Production Docker build
@@ -111,6 +124,16 @@ docker run --rm --network none repopilot-ai-frontend-tests npm test -- --run
 ```
 
 The frontend communicates with the backend through the same-origin `/api/v1` path in the production image, so no CORS or separate frontend service is required.
+
+## Product scope note
+
+The current release is a deterministic static repository analysis product by default. It does not use embeddings or claim runtime understanding. The Issue Assistant and Architecture Canvas are evidence-oriented static analysis features; the optional AI provider requires explicit provider, privacy, and credential configuration.
+
+The Issue Assistant now also includes an evidence-first AI Assistant. It retrieves from `backend/data/assistant_qa.jsonl` and the selected repository snapshot, returns source citations, and works offline with a deterministic fallback. Set `REPOPILOT_LLM_BASE_URL`, `REPOPILOT_LLM_MODEL`, and `REPOPILOT_LLM_API_KEY` to enable an OpenAI-compatible provider. Regenerate the 1,000-record product corpus with `cd backend && python scripts/build_assistant_dataset.py`.
+
+## SaaS scale-up architecture
+
+For the recommended multi-tenant architecture, migration phases, data model, worker design, security controls, and testing strategy, see [SAAS_ARCHITECTURE.md](SAAS_ARCHITECTURE.md).
 
 ## Repository hygiene
 

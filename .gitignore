@@ -24,4 +24,5 @@ backend/*.pyc
 *.log
 coverage/
 
-backend/data/
+backend/data/*
+!backend/data/assistant_qa.jsonl
