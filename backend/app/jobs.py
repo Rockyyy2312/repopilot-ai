@@ -152,6 +152,28 @@ def cancel_job(job_id: str, user_id: str) -> dict[str, Any] | None:
     return _as_dict(row) if row and cursor.rowcount else (_as_dict(row) if row else None)
 
 
+def recover_interrupted_jobs() -> list[str]:
+    """Return persisted work that needs resubmission after a process restart.
+
+    Queued jobs were never claimed. Running jobs may have been interrupted after
+    the process exited, so they are safely moved back to the queue and can be
+    retried by the single-process executor during application startup.
+    """
+    now = time.time()
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT id FROM jobs WHERE kind = 'repository_import' AND status IN ('queued', 'running') ORDER BY created_at"
+        ).fetchall()
+        connection.execute(
+            """UPDATE jobs SET status = 'queued', progress = CASE WHEN status = 'running' THEN 0 ELSE progress END,
+               message = CASE WHEN status = 'running' THEN 'Recovered after process restart' ELSE message END,
+               started_at = NULL, finished_at = NULL, updated_at = ?
+               WHERE kind = 'repository_import' AND status IN ('queued', 'running')""",
+            (now,),
+        )
+    return [str(row["id"]) for row in rows]
+
+
 def reset_jobs() -> None:
     """Test helper; production callers should retain job history."""
     with _connect() as connection:

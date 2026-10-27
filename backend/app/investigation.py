@@ -128,8 +128,7 @@ def investigate(project: dict[str, Any], question: str, error_message: str = "",
         module = module_match.group("module")
         for relation in analysis.imports:
             if relation.module.casefold() == module.casefold() or module.casefold() in relation.module.casefold():
-                add_file(relation.location.path, "import matches the reported module", relation.location.line)
-                evidence.append({"path": relation.location.path, "line": relation.location.line, "text": files[relation.location.path].content.splitlines()[relation.location.line - 1], "kind": "import"})
+                add_file(relation.location.path, "import matches the reported module", relation.location.line, "import")
     if name_match:
         name = name_match.group("name")
         for symbol in analysis.symbols:

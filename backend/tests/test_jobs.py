@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import main as main_module
 from app.auth import CSRF_COOKIE, reset_db
-from app.jobs import create_job, reset_jobs, update_job
+from app.jobs import create_job, get_job_for_worker, recover_interrupted_jobs, reset_jobs, update_job
 from app.main import app
 
 
@@ -51,10 +51,28 @@ def wait_for(client: BrowserClient, job_id: str) -> dict:
 def test_job_store_status_transitions_and_owner_filtering():
     job = create_job("owner", "test", {"value": 1})
     assert job["status"] == "queued"
-    assert update_job(job["id"], status="running", message="Working", only_status="queued")["status"] == "running"
+    started = update_job(job["id"], status="running", message="Working", only_status="queued")
+    assert started is not None
+    assert started["status"] == "running"
     result = update_job(job["id"], status="succeeded", progress=1, result={"ok": True}, only_status="running")
+    assert result is not None
     assert result["status"] == "succeeded"
     assert result["result"] == {"ok": True}
+
+
+def test_recover_interrupted_jobs_requeues_running_work():
+    queued = create_job("owner", "repository_import", {"queued": True})
+    running = create_job("owner", "repository_import", {"running": True})
+    assert update_job(running["id"], status="running", message="Working", only_status="queued")
+
+    recovered = recover_interrupted_jobs()
+
+    assert set(recovered) == {queued["id"], running["id"]}
+    restored = get_job_for_worker(running["id"])
+    assert restored is not None
+    assert restored["status"] == "queued"
+    assert restored["started_at"] is None
+    assert restored["message"] == "Recovered after process restart"
 
 
 def test_async_import_returns_result_and_unauthorized_job_is_hidden(monkeypatch):

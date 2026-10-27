@@ -50,6 +50,26 @@ def test_analysis_extracts_python_and_typescript_symbols_and_imports():
     assert result.tree["app.py"]["type"] == "file"
 
 
+def test_javascript_parser_handles_multiline_reexports_and_dynamic_imports():
+    result = analyze_files({
+        "src/app.ts": (
+            'import {\n'
+            '  Service,\n'
+            '} from "./service";\n'
+            'export { helper } from "./helper";\n'
+            'const lazy = import("./lazy");\n'
+            'const loaded = require("./loaded");\n'
+        ),
+    })
+
+    assert [(item.module, item.location.line) for item in result.imports] == [
+        ("./service", 1),
+        ("./helper", 4),
+        ("./lazy", 5),
+        ("./loaded", 6),
+    ]
+
+
 def test_invalid_source_is_reported_without_execution():
     files, _ = discover_files(FIXTURE_ROOT)
     result = analyze_files(files)

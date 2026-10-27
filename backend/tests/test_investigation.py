@@ -31,6 +31,19 @@ def test_investigation_reports_import_evidence_and_ranked_hypothesis():
     assert any("does not prove" in limitation for limitation in report["limitations"])
 
 
+def test_investigation_deduplicates_module_error_evidence():
+    project = make_project({"app.py": "from missing_service import Client\n"})
+
+    report = investigate(
+        project,
+        "Why does startup fail?",
+        "ModuleNotFoundError: No module named 'missing_service'",
+    )
+
+    matching = [item for item in report["confirmed_evidence"] if item["path"] == "app.py" and item["line"] == 1]
+    assert matching == [{"path": "app.py", "line": 1, "text": "from missing_service import Client", "kind": "import"}]
+
+
 def test_investigation_is_inconclusive_without_matching_evidence():
     project = make_project({"main.py": "def healthy():\n    return True\n"})
 

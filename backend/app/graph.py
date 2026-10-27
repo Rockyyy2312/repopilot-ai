@@ -26,7 +26,12 @@ def build_graph(project: dict[str, Any], resolve_import: Callable[[str, str, set
     selected = {item["id"] for item in raw_nodes}
     if scope:
         clean_scope = scope.strip().strip("/")
-        selected = {path for path in selected if path == clean_scope or path.startswith(clean_scope + "/")}
+        if clean_scope == ".":
+            # The UI uses "." as the explicit root-directory scope.  An empty
+            # scope means "all", so root-level files need their own sentinel.
+            selected = {path for path in selected if "/" not in path}
+        else:
+            selected = {path for path in selected if path == clean_scope or path.startswith(clean_scope + "/")}
     if depth is not None:
         distances = {path: 0 for path in selected}
         queue = deque(selected)

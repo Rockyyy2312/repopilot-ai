@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import main as main_module
 from app.auth import CSRF_COOKIE, reset_db
+from app.jobs import reset_jobs
 from app.main import MAX_ARCHIVE_BYTES, PROJECTS, app, cleanup_projects
 
 class BrowserTestClient(TestClient):
@@ -25,6 +26,7 @@ client = BrowserTestClient(app)
 def setup_function():
     PROJECTS.clear()
     reset_db()
+    reset_jobs()
     response = client.post("/api/v1/auth/register", json={"email": "test@example.com", "password": "correct horse battery"})
     assert response.status_code == 200
     login = client.post("/api/v1/auth/login", json={"email": "test@example.com", "password": "correct horse battery"})
@@ -96,6 +98,15 @@ def test_graph_contains_only_direct_import_relationships():
     assert graph["edges"][0]["to"] == "src/helpers.py"
     assert graph["edges"][0]["evidence"]["resolved"] is True
     assert graph["edges"][0]["evidence"] == {"line": 1, "kind": "import", "resolved": True, "module": "helpers"}
+
+
+def test_graph_root_scope_includes_root_level_files():
+    project_id = import_zip(files={"main.py": "import helpers\n", "helpers.py": "VALUE = 1\n", "src/other.py": "VALUE = 2\n"})
+
+    graph = client.get(f"/api/v1/projects/{project_id}/graph?scope=.")
+
+    assert graph.status_code == 200
+    assert {node["id"] for node in graph.json()["nodes"]} == {"helpers.py", "main.py"}
 
 
 def test_analysis_endpoint_returns_tree_languages_and_limitations():
@@ -449,6 +460,20 @@ def test_project_quota_counts_persisted_projects_after_cache_restart(monkeypatch
     PROJECTS.clear()
     response = client.post("/api/v1/projects/import/archive", files={"file": ("repo.zip", archive(), "application/zip")})
     assert response.status_code == 429
+
+
+def test_startup_recovery_resubmits_persisted_import_jobs(monkeypatch):
+    from app.jobs import create_job, update_job
+
+    job = create_job("startup-owner", "repository_import", {"type": "archive"})
+    assert update_job(job["id"], status="running", only_status="queued")
+    submitted = []
+
+    monkeypatch.setattr(main_module.IMPORT_JOB_EXECUTOR, "submit", lambda function, job_id: submitted.append((function, job_id)))
+
+    main_module.recover_import_jobs()
+
+    assert submitted == [(main_module._run_import_job, job["id"])]
 
 
 def test_registration_does_not_authenticate_and_login_does():
