@@ -29,12 +29,12 @@ function App() {
     if (user) localStorage.setItem(`repopilot.last_project.${user.id}`, next.id)
   }
 
-  const openProjectSummary = async (next: api.ProjectSummary) => {
+  const openProjectSummary = async (next: api.ProjectSummary, preserveCurrentRoute = false) => {
     if (!next) return
     try {
       const detail = 'analysis' in next ? next as unknown as api.ImportResponse : await api.getProject(next.id)
       rememberProject(detail)
-      navigate('overview', true)
+      if (!preserveCurrentRoute) navigate('overview', true)
     } catch (reason) {
       setWorkspaceError(reason instanceof Error ? reason.message : 'Could not open this repository.')
     }
@@ -78,7 +78,7 @@ function App() {
       setProjects(result.projects)
       const savedId = localStorage.getItem(`repopilot.last_project.${user.id}`)
       const restored = result.projects.find(item => item.id === savedId) || (result.projects.length === 1 ? result.projects[0] : undefined)
-      if (restored) void openProjectSummary(restored)
+      if (restored) void openProjectSummary(restored, Boolean(route.filePath))
     }).catch(reason => setWorkspaceError(reason instanceof Error ? reason.message : 'Could not load repositories.'))
   }, [user])
 
@@ -115,6 +115,11 @@ function App() {
       navigate('repositories', true)
     }
   }
+  const openFileRoute = (path: string) => {
+    const nextPath = `/file/${encodeURIComponent(path)}`
+    window.history.pushState({}, '', nextPath)
+    setRoute(routeForPath(nextPath))
+  }
   const content = !project
     ? route.name === 'settings'
       ? <SettingsScreen user={user} project={null} onDeleted={deleted} onPreferencesChanged={prefs => { setReducedMotion(prefs.reduced_motion); setCompactMode(prefs.compact_mode) }} />
@@ -131,7 +136,7 @@ function App() {
             ? <SearchScreen project={project} />
             : route.name === 'investigate'
               ? <IssueScreen project={project} />
-              : <OverviewScreen project={project} onNavigate={navigate} onOpenFile={() => navigate('search')} />
+        : <OverviewScreen project={project} initialFilePath={route.filePath} onNavigate={navigate} onOpenFile={openFileRoute} />
 
   return <div className="app min-h-screen"><a className="skip-link" href="#main-content">Skip to main content</a><Header project={project} user={user} onLogout={logout} /><main className="shell"><Sidebar project={project} projects={projects} route={route} navigate={navigate} onSelectProject={selectProject} /><section id="main-content" className="content">{workspaceError && <Alert message={workspaceError} clear={() => setWorkspaceError('')} />}{content}</section></main></div>
 }

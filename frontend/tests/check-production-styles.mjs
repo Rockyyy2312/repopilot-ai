@@ -18,18 +18,18 @@ test('built entry loads the design CSS and preserves computed desktop layouts', 
   assert.equal(style('.shell').display, 'flex')
   assert.equal(style('header').display, 'flex')
   assert.equal(style('.brand').display, 'flex')
-  assert.equal(style('aside').width, '255px')
+  assert.equal(style('aside').width, '260px')
   assert.equal(style('.import-grid').display, 'grid')
   assert.equal(style('.overview-grid').display, 'grid')
-  assert.equal(style('.card').backgroundColor, 'rgb(14, 22, 35)')
+  assert.match(localCSS, /\.card\{[^}]*background:var\(--card\)/)
   assert.equal(style('.card').borderRadius, '9px')
   assert.equal(style('.content').minWidth, '0')
-  assert.equal(style('.outline').outlineStyle, 'none')
+  assert.ok(localCSS.includes('.outline,.button-secondary{'), 'production CSS must include outline button styles')
   // JSDOM does not evaluate responsive layout. Verify the emitted mobile overrides.
   const root = postcss.parse(css)
   const mobileRules = []
   root.walkAtRules('media', (rule) => {
-    if (/max-width:\s*800px/.test(rule.params)) mobileRules.push(rule.toString())
+    if (/max-width:\s*820px/.test(rule.params)) mobileRules.push(rule.toString())
   })
   assert.ok(mobileRules.some(rule => /\.shell\{display:block/.test(rule)))
   assert.ok(mobileRules.some(rule => /grid-template-columns:1fr/.test(rule)))

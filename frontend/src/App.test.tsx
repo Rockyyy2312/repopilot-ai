@@ -7,7 +7,7 @@ import * as api from './api'
 vi.mock('./api', () => ({
   request: vi.fn(), me: vi.fn(), listProjects: vi.fn(), login: vi.fn(), register: vi.fn(), logout: vi.fn(),
   importGithub: vi.fn(), importArchive: vi.fn(), getTree: vi.fn(), getFile: vi.fn(), search: vi.fn(),
-  investigate: vi.fn(), graph: vi.fn(), report: vi.fn(), deleteProject: vi.fn(), startImportJobGithub: vi.fn(), startImportJobArchive: vi.fn(), getJob: vi.fn(), cancelJob: vi.fn(), normalizeImport: (value: unknown) => value,
+  investigate: vi.fn(), askAssistant: vi.fn(), graph: vi.fn(), report: vi.fn(), deleteProject: vi.fn(), startImportJobGithub: vi.fn(), startImportJobArchive: vi.fn(), getJob: vi.fn(), cancelJob: vi.fn(), normalizeImport: (value: unknown) => value,
 }))
 
 const project = { id: 'p1', repository_name: 'repo-one', source: { type: 'github', url: 'https://github.com/owner/repo-one' }, file_count: 2, languages: { python: 2 }, symbol_count: 1, import_count: 1, warning_count: 0, created_at: 1_700_000_000, accessed_at: 1_700_000_000, tree: {}, warnings: [], analysis: { files: [{ path: 'main.py', language: 'python', size: 10, symbols: [], imports: [], status: 'analyzed', limitation: null }], tree: {}, languages: { python: 2 }, symbols: [], imports: [], excluded: [], errors: [] } }
@@ -114,6 +114,16 @@ describe('repository-aware screens', () => {
     }
   })
 
+  it('opens a bookmarked source file route in the source inspector', async () => {
+    window.history.replaceState({}, '', '/file/main.py')
+    await act(async () => { root.render(<App />); await Promise.resolve() })
+    await act(async () => { await Promise.resolve() })
+
+    expect(document.querySelector('[aria-label="Source inspector"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('main.py')
+    expect(api.getFile).toHaveBeenCalledWith('p1', 'main.py')
+  })
+
   it('persists the supported reduced-motion setting through the preferences API', async () => {
     await act(async () => { root.render(<App />); await Promise.resolve() })
     const button = Array.from(document.querySelectorAll('nav button')).find(item => item.textContent?.includes('Settings')) as HTMLButtonElement
@@ -146,6 +156,24 @@ describe('repository-aware screens', () => {
     await act(async () => { document.querySelector('form.ex-search-bar')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await new Promise(resolve => setTimeout(resolve, 0)) })
     expect(document.body.textContent).toContain('Search service unavailable')
     expect(document.body.textContent).toContain('Try again')
+  })
+
+  it('asks the AI assistant and renders its evidence boundary', async () => {
+    vi.mocked(api.askAssistant).mockResolvedValue({
+      question: 'Where is greet?', answer: 'The function is in the source snapshot.', provider: 'deterministic-fallback',
+      citations: [{ id: 'repo-1', source: 'repository', path: 'main.py', lineStart: 1, lineEnd: 1 }],
+      retrieved: [], limitations: ['Static evidence only'],
+    })
+    await act(async () => { root.render(<App />); await Promise.resolve() })
+    const button = Array.from(document.querySelectorAll('nav button')).find(item => item.textContent?.includes('Issue Assistant')) as HTMLButtonElement
+    await act(async () => { button.click() })
+    const input = document.querySelector('textarea[aria-label="Ask RepoPilot AI"]') as HTMLTextAreaElement
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+    await act(async () => { setter?.call(input, 'Where is greet?'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+    await act(async () => { input.closest('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await Promise.resolve() })
+    expect(api.askAssistant).toHaveBeenCalledWith('p1', 'Where is greet?')
+    expect(document.body.textContent).toContain('The function is in the source snapshot.')
+    expect(document.body.textContent).toContain('Static evidence only')
   })
 })
 

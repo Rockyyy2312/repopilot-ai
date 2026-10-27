@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { normalizeGraph, normalizeImport, normalizeInvestigation, normalizeOverview, normalizePreferences, normalizeProjectList, normalizeSearch, normalizeJob, request } from './api'
+import { normalizeAssistant, normalizeGraph, normalizeImport, normalizeInvestigation, normalizeOverview, normalizePreferences, normalizeProjectList, normalizeSearch, normalizeJob, request } from './api'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -12,6 +12,15 @@ describe('request errors', () => {
   it('turns network failures into an actionable Error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
     await expect(request('/projects')).rejects.toMatchObject({ message: 'Unable to reach the API. Check your connection and try again.' })
+  })
+
+  it('uses the configured Vite API base URL', async () => {
+    vi.stubEnv('VITE_API_BASE_URL', '/configured-api/')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+    await request('/health')
+
+    expect(fetch).toHaveBeenCalledWith('/configured-api/health', expect.objectContaining({ credentials: 'include' }))
   })
 })
 
@@ -51,5 +60,27 @@ describe('workspace response normalizers', () => {
 describe('normalizeInvestigation', () => {
   it('normalizes the structured report and safely drops malformed entries', () => {
     expect(normalizeInvestigation({ summary: 'A finding', confirmed_evidence: [{ path: 'src/app.ts', line: 8, text: 'match', kind: 'symbol' }, null], relevant_files: [{ path: 'src/app.ts', symbols: [{ name: 'boot', kind: 'function', line: 8 }] }], hypotheses: [{ text: 'Startup path is involved', confidence: 'high', evidence: ['symbol match'] }], recommended_next_steps: ['Inspect caller'], limitations: ['Static analysis only'] })).toEqual({ question: '', summary: 'A finding', confirmedEvidence: [{ path: 'src/app.ts', line: 8, text: 'match', kind: 'symbol' }], relevantFiles: [{ path: 'src/app.ts', reason: '', symbols: [{ name: 'boot', kind: 'function', path: 'src/app.ts', line: 8 }] }], hypotheses: [{ text: 'Startup path is involved', confidence: 'high', evidence: ['symbol match'] }], recommendedNextSteps: ['Inspect caller'], limitations: ['Static analysis only'] })
+  })
+})
+
+describe('normalizeAssistant', () => {
+  it('normalizes a cited answer and removes malformed retrieval rows', () => {
+    expect(normalizeAssistant({
+      question: 'Where is greet?',
+      answer: 'It is in the source.',
+      provider: 'deterministic-fallback',
+      citations: [{ id: 'repo-1', source: 'repository', path: 'src/app.py', line_start: 4, line_end: 4 }, { id: 2 }],
+      retrieved: [{ id: 'repo-1', source: 'repository', category: 'repository', score: 0.8 }, { id: 2 }],
+      limitations: ['Static evidence only'],
+    })).toEqual({
+      question: 'Where is greet?', answer: 'It is in the source.', provider: 'deterministic-fallback',
+      citations: [{ id: 'repo-1', source: 'repository', path: 'src/app.py', lineStart: 4, lineEnd: 4 }],
+      retrieved: [{ id: 'repo-1', source: 'repository', category: 'repository', score: 0.8 }],
+      limitations: ['Static evidence only'],
+    })
+  })
+
+  it('returns safe defaults for an unavailable assistant payload', () => {
+    expect(normalizeAssistant({})).toEqual({ question: '', answer: '', provider: 'unknown', citations: [], retrieved: [], limitations: [] })
   })
 })

@@ -111,6 +111,10 @@ export type Investigation = {
   limitations: string[]
 }
 
+export type AssistantCitation = { id: string; source: string; path?: string; lineStart?: number; lineEnd?: number }
+export type AssistantRetrieved = { id: string; source: string; category: string; score: number }
+export type AssistantResponse = { question: string; answer: string; provider: string; citations: AssistantCitation[]; retrieved: AssistantRetrieved[]; limitations: string[] }
+
 export const normalizeInvestigation = (data: unknown): Investigation => {
   const root = objectValue(data)
   const evidence = arrayValue(root.confirmed_evidence ?? root.confirmedEvidence ?? root.findings).flatMap((item) => {
@@ -148,6 +152,25 @@ export const normalizeInvestigation = (data: unknown): Investigation => {
     recommendedNextSteps: list(root.recommended_next_steps ?? root.recommendedNextSteps ?? root.next_steps),
     limitations: list(root.limitations ?? root.caveats),
   }
+}
+
+export const normalizeAssistant = (data: unknown): AssistantResponse => {
+  const root = objectValue(data)
+  const citations = arrayValue(root.citations).flatMap(item => {
+    const value = objectValue(item)
+    const id = textValue(value.id); const source = textValue(value.source)
+    if (!id || !source) return []
+    const path = textValue(value.path) || undefined
+    return [{ id, source, ...(path ? { path } : {}), ...(numberValue(value.line_start) !== null ? { lineStart: numberValue(value.line_start) as number } : {}), ...(numberValue(value.line_end) !== null ? { lineEnd: numberValue(value.line_end) as number } : {}) }]
+  })
+  const retrieved = arrayValue(root.retrieved).flatMap(item => {
+    const value = objectValue(item)
+    const id = textValue(value.id); const source = textValue(value.source); const category = textValue(value.category)
+    if (!id || !source || !category) return []
+    return [{ id, source, category, score: numberValue(value.score) ?? 0 }]
+  })
+  const list = (value: unknown) => arrayValue(value).map(item => textValue(item)).filter(Boolean)
+  return { question: textValue(root.question), answer: textValue(root.answer), provider: textValue(root.provider, 'unknown'), citations, retrieved, limitations: list(root.limitations) }
 }
 export type Overview = {
   project_id: string
@@ -216,7 +239,7 @@ export const normalizeGraph = (data: unknown): Graph => {
   return { nodes, edges, limitations, ...(truncated ? { truncated } : {}) }
 }
 
-const base = '/api/v1'
+const apiBase = () => (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/+$/, '')
 export type AuthUser = { id: string; email: string }
 
 const errorWithStatus = (message: string, status?: number): Error & { status?: number } => {
@@ -256,7 +279,7 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), 60_000)
   try {
-    const response = await fetch(base + url, { credentials: 'include', ...init, headers, signal: init?.signal || controller.signal })
+    const response = await fetch(apiBase() + url, { credentials: 'include', ...init, headers, signal: init?.signal || controller.signal })
     if (!response.ok) {
       const body = await response.json().catch(() => null)
       throw errorWithStatus(validationMessage(body, response.status), response.status)
@@ -280,6 +303,7 @@ const normalizePayload = (url: string, data: unknown): unknown => {
   if (url === '/users/me/preferences') return normalizePreferences(data)
   if (/^\/projects\/[^/]+\/graph(?:\?.*)?$/.test(url)) return normalizeGraph(data)
   if (/^\/jobs\/[^/]+$/.test(url)) return normalizeJob(data)
+  if (/^\/projects\/[^/]+\/assistant$/.test(url)) return normalizeAssistant(data)
   if (/^\/projects\/[^/]+$/.test(url)) return normalizeImport(data)
   return data
 }
@@ -310,6 +334,7 @@ export const investigate = (id: string, input: InvestigationInput | string) => {
   const payload = typeof input === 'string' ? { question: input } : input
   return request<unknown>(`/projects/${id}/investigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).then(normalizeInvestigation)
 }
+export const askAssistant = (id: string, question: string, top_k = 5) => request<AssistantResponse>(`/projects/${encodeURIComponent(id)}/assistant`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, top_k }) })
 export const graph = (id: string, options?: { scope?: string; depth?: number; limit?: number }) => { const params = new URLSearchParams(); if (options?.scope) params.set('scope', options.scope); if (options?.depth !== undefined) params.set('depth', String(options.depth)); if (options?.limit !== undefined) params.set('limit', String(options.limit)); const suffix = params.toString() ? `?${params}` : ''; return request<Graph>(`/projects/${encodeURIComponent(id)}/graph${suffix}`) }
 export const report = (id: string, input?: InvestigationInput) => request<{ markdown: string }>(`/projects/${id}/report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input || {}) })
 export const me = () => request<{ authenticated: boolean; user: AuthUser | null }>('/auth/me')
